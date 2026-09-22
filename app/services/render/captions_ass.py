@@ -12,6 +12,16 @@ WORD_TOLERANCE_SEC = 0.05
 MAX_PAUSE_SEC = 0.6  # a longer pause starts a new caption group
 LAST_WORD_TAIL_SEC = 0.05
 LONG_GROUP_WORDS = 5  # groups this long are split over two lines (WrapStyle 2 never wraps by itself)
+# WrapStyle 2 (docs/EDIT_PLAN_SCHEMA.md) means libass NEVER auto-wraps: a group whose words are individually
+# short but numerous/wide enough (agglutinative Uzbek words are often long) can overflow past the frame edges
+# with no fallback. AVG_CHAR_WIDTH_RATIO is a deliberately conservative (wide) estimate of a bold sans-serif
+# glyph's average width as a fraction of its point size, used to keep a caption GROUP itself from ever getting
+# wide enough to need auto-wrap in the first place (see `_groups`), rather than trying to reflow it after the
+# fact. It has no font metrics behind it (no font-measurement dependency in this image) - it trades a few
+# probably-unnecessary early line breaks for the guarantee that text never runs off the frame.
+AVG_CHAR_WIDTH_RATIO = 0.62
+SIDE_MARGIN_FRACTION = 0.06  # matches the `side` margin in `_styles`
+_OVERLAY_FONT_PCT = {"title": 0.06, "cta": 0.055, "lower_third": 0.04}  # of target_h; also used by `_styles`
 
 _STYLE_FORMAT = (
     "Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
@@ -81,9 +91,10 @@ def _styles(plan: EditPlan, w: int, h: int) -> list[str]:
     return [
         _style("Cap", font, cap_size, ass_color(caps.primary_color), ass_color(caps.outline_color),
                position[0], side, position[1]),
-        _style("Title", font, 0.06 * h, white, black, 8, side, round(0.08 * h)),
-        _style("Cta", font, 0.055 * h, ass_color(caps.highlight_color), black, 2, side, round(0.30 * h)),
-        _style("Lower", font, 0.04 * h, white, black, 1, side, round(0.10 * h)),
+        _style("Title", font, _OVERLAY_FONT_PCT["title"] * h, white, black, 8, side, round(0.08 * h)),
+        _style("Cta", font, _OVERLAY_FONT_PCT["cta"] * h, ass_color(caps.highlight_color), black, 2,
+               side, round(0.30 * h)),
+        _style("Lower", font, _OVERLAY_FONT_PCT["lower_third"] * h, white, black, 1, side, round(0.10 * h)),
         _style("Wm", font, 0.03 * h, ass_color("#FFFFFF", 0x80), ass_color("#000000", 0x80), 3,
                round(0.03 * w), round(0.03 * h)),
     ]  # fmt: skip
@@ -132,11 +143,31 @@ def _clip_words(entry: ClipTimelineEntry, transcript: Transcript, uppercase: boo
     return words
 
 
-def _groups(words: list[_Word], max_words: int) -> list[list[_Word]]:
+def _estimated_text_width(text: str, font_px: float) -> float:
+    return len(text) * font_px * AVG_CHAR_WIDTH_RATIO
+
+
+def _groups(
+    words: list[_Word],
+    max_words: int,
+    *,
+    font_px: float | None = None,
+    max_line_width_px: float | None = None,
+) -> list[list[_Word]]:
+    """Split into caption groups: a new group starts on a long pause, at `max_words`, or (if `font_px` /
+    `max_line_width_px` are given) as soon as ONE MORE word would make the group's own text too wide for the
+    frame - see the AVG_CHAR_WIDTH_RATIO comment above `_join`."""
+    width_aware = font_px is not None and max_line_width_px is not None
     groups: list[list[_Word]] = []
     current: list[_Word] = []
     for word in words:
-        if current and (len(current) >= max_words or word.start - current[-1].end > MAX_PAUSE_SEC):
+        too_wide = False
+        if width_aware and current:
+            joined = " ".join(w.text for w in (*current, word))
+            too_wide = _estimated_text_width(joined, font_px) > max_line_width_px  # type: ignore[arg-type]
+        if current and (
+            len(current) >= max_words or word.start - current[-1].end > MAX_PAUSE_SEC or too_wide
+        ):
             groups.append(current)
             current = []
         current.append(word)
@@ -145,14 +176,46 @@ def _groups(words: list[_Word], max_words: int) -> list[list[_Word]]:
     return groups
 
 
+def _wrap_to_width(text: str, font_px: float, max_width_px: float) -> str:
+    """Greedy word-wrap a plain (already-escaped) string into `\\N`-joined lines, none wider than
+    `max_width_px` by `_estimated_text_width`. Used for overlay text, which - unlike captions - has no
+    per-word timing to split on, so it is wrapped once, up front, as a whole."""
+    words = text.split(" ")
+    lines: list[str] = []
+    current: list[str] = []
+    for word in words:
+        candidate = [*current, word]
+        if current and _estimated_text_width(" ".join(candidate), font_px) > max_width_px:
+            lines.append(" ".join(current))
+            current = [word]
+        else:
+            current = candidate
+    if current:
+        lines.append(" ".join(current))
+    return "\\N".join(lines)
+
+
 def _caption_events(
-    plan: EditPlan, transcript: Transcript, timeline: Sequence[ClipTimelineEntry]
+    plan: EditPlan,
+    transcript: Transcript,
+    timeline: Sequence[ClipTimelineEntry],
+    *,
+    target_w: int,
+    target_h: int,
 ) -> list[str]:
     caps = plan.captions
     highlight, primary = ass_color(caps.highlight_color), ass_color(caps.primary_color)
+    font_px = caps.font_size_pct / 100 * target_h
+    max_line_width_px = target_w * (1 - 2 * SIDE_MARGIN_FRACTION)
     events: list[str] = []
     for entry in timeline:
-        for group in _groups(_clip_words(entry, transcript, caps.uppercase), caps.max_words_per_line):
+        groups = _groups(
+            _clip_words(entry, transcript, caps.uppercase),
+            caps.max_words_per_line,
+            font_px=font_px,
+            max_line_width_px=max_line_width_px,
+        )
+        for group in groups:
             if caps.style == "classic":
                 events.append(_dialogue(group[0].start, group[-1].end, "Cap", _join([w.text for w in group])))
                 continue
@@ -177,13 +240,16 @@ def build_ass(
     """The complete .ass text. All user-influenced text is escaped with `escape_ass` first."""
     events: list[str] = []
     if plan.captions.enabled:
-        events += _caption_events(plan, transcript, timeline)
+        events += _caption_events(plan, transcript, timeline, target_w=target_w, target_h=target_h)
 
     total = sum(entry.clip.out_duration for entry in timeline)
+    overlay_max_width = target_w * (1 - 2 * SIDE_MARGIN_FRACTION)
     for overlay in plan.overlays:
         text = escape_ass(overlay.text)
         if not text or overlay.start >= total:
             continue
+        overlay_font_px = _OVERLAY_FONT_PCT[overlay.style] * target_h
+        text = _wrap_to_width(text, overlay_font_px, overlay_max_width)
         if overlay.style == "title":  # `position` moves only the title; cta/lower_third have fixed places
             text = f"{{\\an{_TITLE_ALIGNMENT[overlay.position]}}}{text}"
         events.append(
