@@ -10,13 +10,22 @@ from urllib.parse import urlparse
 import httpx
 import pytest
 
-from app.core.config import Settings, get_settings
+from app.core.config import Settings
 from app.services.storage import AzureBlobStorage, _parse_connection_string, ensure_containers
+
+# Always the fixed Azurite dev connection string (docker-compose `azurite` service), never whatever
+# AZURE_STORAGE_CONNECTION_STRING happens to be in the real .env - that may point at a real Azure account
+# (e.g. in production, or once a developer has switched their local .env over), and this file's assertions
+# are hardcoded to Azurite's internal/public hostname split.
+AZURITE_CONN = (
+    "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;"
+    "AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;"
+    "BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+)
 
 
 def _azurite_endpoint() -> str | None:
-    conn = get_settings().azure_storage_connection_string
-    endpoint = _parse_connection_string(conn).get("BlobEndpoint")
+    endpoint = _parse_connection_string(AZURITE_CONN).get("BlobEndpoint")
     if not endpoint:
         return None
     parsed = urlparse(endpoint)
@@ -31,10 +40,8 @@ pytestmark = pytest.mark.skipif(_azurite_endpoint() is None, reason="Azurite is 
 
 
 def _settings(**overrides: str) -> Settings:
-    conn = get_settings().azure_storage_connection_string
-    # Default the public endpoint to "" so a dev .env (browser-facing localhost URL) cannot leak in.
     overrides.setdefault("azure_public_blob_endpoint", "")
-    return Settings(_env_file=None, azure_storage_connection_string=conn, **overrides)
+    return Settings(_env_file=None, azure_storage_connection_string=AZURITE_CONN, **overrides)
 
 
 @pytest.fixture

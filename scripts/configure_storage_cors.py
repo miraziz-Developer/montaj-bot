@@ -13,9 +13,10 @@ from app.services.storage import ensure_containers
 
 
 def build_cors_rule(settings: Settings) -> CorsRule:
-    origins = [settings.public_base_url.rstrip("/")]
-    if settings.env == "dev":
-        origins.append("*")
+    # Azure rejects a rule mixing "*" with a specific origin in one AllowedOrigins list (InvalidXmlNodeValue):
+    # "*" must be the rule's only entry. In dev we want any localhost port to work, so "*" wins outright
+    # there; in production we only ever allow the real origin.
+    origins = ["*"] if settings.env == "dev" else [settings.public_base_url.rstrip("/")]
     return CorsRule(
         allowed_origins=origins,
         allowed_methods=["GET", "PUT", "HEAD", "OPTIONS"],
