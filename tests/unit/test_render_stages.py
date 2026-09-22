@@ -4,12 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from app.schemas.edit_plan import Captions, Export, Music, TextOverlay
+from app.schemas.edit_plan import Captions, Clip, Export, Music, TextOverlay, Transition
 from app.services.media.ffmpeg import FFmpegError
 from app.services.media.probe import media_duration, probe
 from app.services.render import final_stage
 from app.services.render.captions_ass import build_ass, build_timeline
-from app.services.render.concat_stage import concat_clips, concat_list_text, quote_concat_path
+from app.services.render.concat_stage import (
+    build_transition_filter_complex,
+    concat_clips,
+    concat_list_text,
+    quote_concat_path,
+)
 from app.services.render.final_stage import (
     _audio_graph,
     _video_graph,
@@ -46,6 +51,77 @@ async def test_concat_joins_clips_with_stream_copy(clip_two_scenes: Path, tmp_pa
     assert "'\\''" in (tmp_path / "list.txt").read_text()
     with pytest.raises(ValueError):
         await concat_clips([], out_path=out, workdir=tmp_path)
+
+
+# ---------- concat: transitions ----------
+
+
+def _clip(transition: Transition | None = None) -> Clip:
+    return Clip(id="c", src_in=0, src_out=1, transition_in=transition or Transition())
+
+
+def test_all_cut_transitions_produce_plain_concat_pairs() -> None:
+    clips = [_clip(), _clip(), _clip()]
+    filter_complex, v, a = build_transition_filter_complex([2.0, 3.0, 1.5], clips)
+    assert filter_complex == (
+        "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v1][a1];[v1][a1][2:v][2:a]concat=n=2:v=1:a=1[v2][a2]"
+    )
+    assert (v, a) == ("v2", "a2")
+
+
+def test_crossfade_offset_is_the_running_timeline_minus_the_overlap() -> None:
+    clips = [_clip(), _clip(Transition(type="crossfade", duration=0.5))]
+    filter_complex, v, a = build_transition_filter_complex([2.0, 3.0], clips)
+    assert filter_complex == (
+        "[0:v][1:v]xfade=transition=fade:duration=0.500:offset=1.500,format=yuv420p[v1];"
+        "[0:a][1:a]acrossfade=d=0.500[a1]"
+    )
+    assert (v, a) == ("v1", "a1")
+
+
+def test_fade_black_maps_to_the_fadeblack_xfade_transition() -> None:
+    clips = [_clip(), _clip(Transition(type="fade_black", duration=0.3))]
+    filter_complex, _, _ = build_transition_filter_complex([1.0, 1.0], clips)
+    assert "transition=fadeblack:duration=0.300" in filter_complex
+
+
+def test_crossfade_duration_is_clamped_to_the_shorter_neighboring_clip() -> None:
+    clips = [_clip(), _clip(Transition(type="crossfade", duration=1.0))]
+    filter_complex, _, _ = build_transition_filter_complex([0.4, 5.0], clips)
+    assert "duration=0.400" in filter_complex  # clamped to the 0.4s first clip, not the requested 1.0s
+
+
+def test_a_zero_duration_transition_request_is_treated_as_a_cut() -> None:
+    clips = [_clip(), _clip(Transition(type="crossfade", duration=0.0))]
+    filter_complex, _, _ = build_transition_filter_complex([1.0, 1.0], clips)
+    assert filter_complex == "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v1][a1]"
+
+
+def test_mixed_cut_and_crossfade_advance_the_timeline_correctly() -> None:
+    # clip0 (2s) --cut--> clip1 (3s) --0.5s crossfade--> clip2 (1s)
+    # timeline after clip1: 2+3=5; crossfade offset against clip2 = 5-0.5=4.5
+    clips = [_clip(), _clip(), _clip(Transition(type="crossfade", duration=0.5))]
+    filter_complex, v, a = build_transition_filter_complex([2.0, 3.0, 1.0], clips)
+    assert "concat=n=2:v=1:a=1[v1][a1]" in filter_complex
+    assert "[v1][2:v]xfade=transition=fade:duration=0.500:offset=4.500" in filter_complex
+    assert (v, a) == ("v2", "a2")
+
+
+async def test_concat_with_a_real_crossfade_shortens_the_joined_duration(
+    clip_two_scenes: Path, tmp_path: Path
+) -> None:
+    """The crossfade OVERLAPS the two clips, so the joined output is shorter than their sum by the
+    transition duration - proof it is a real dissolve, not just a relabeled concat."""
+    a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    for path in (a, b):
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", str(clip_two_scenes), "-t", "2", "-c", "copy", str(path)],
+            check=True,
+        )
+    out = tmp_path / "joined.mp4"
+    clips = [_clip(), _clip(Transition(type="crossfade", duration=0.5))]
+    await concat_clips([a, b], out_path=out, workdir=tmp_path, clips=clips)
+    assert await media_duration(out) == pytest.approx(3.5, abs=0.2)  # 2 + 2 - 0.5, not 4
 
 
 # ---------- music catalog ----------

@@ -9,7 +9,7 @@ from collections.abc import Collection, Sequence
 
 from pydantic import ValidationError
 
-from app.schemas.edit_plan import Clip, EditPlan, Watermark
+from app.schemas.edit_plan import Clip, EditPlan, Transition, Watermark
 from app.services.ai.presets import PresetRules
 from app.services.stt.base import Transcript
 
@@ -129,6 +129,13 @@ def apply_rhythm(plan: EditPlan, transcript: Transcript, preset: PresetRules) ->
         for i, clip in enumerate(clips):
             reframe = clip.reframe.model_copy(update={"zoom": levels[i % len(levels)]})
             clips[i] = clip.model_copy(update={"reframe": reframe})
+    if preset.crossfade_sec > 0:
+        # Every cut gets the same short crossfade (a per-style constant, not an AI choice - like zoom_levels
+        # above); clip 0 keeps its default transition_in since nothing precedes it.
+        transition = Transition(type="crossfade", duration=preset.crossfade_sec)
+        for i, clip in enumerate(clips):
+            if i > 0:
+                clips[i] = clip.model_copy(update={"transition_in": transition})
     return renumber(plan.model_copy(update={"clips": clips}))
 
 

@@ -1,1 +1,7 @@
-[]
+[
+  {"id": "upbeat_funky_energy", "mood": "upbeat", "file": "upbeat_funky_energy.mp3"},
+  {"id": "uplifting_graduation", "mood": "uplifting", "file": "uplifting_graduation.mp3"},
+  {"id": "intense_action_strike", "mood": "intense", "file": "intense_action_strike.mp3"},
+  {"id": "energetic_city_run", "mood": "energetic", "file": "energetic_city_run.mp3"},
+  {"id": "epic_heroic_adventure", "mood": "epic", "file": "epic_heroic_adventure.mp3"}
+]

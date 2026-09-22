@@ -12,6 +12,7 @@ class PresetRules:
     label: str  # Uzbek, shown to users (same names as the Mini App style cards)
     max_shot_sec: float
     zoom_levels: tuple[float, ...]  # alternate per clip
+    crossfade_sec: float  # 0 = hard cuts; applied between clips by code, like zoom_levels
     remove_gap_sec: float  # silent gaps longer than this are cut out
     pad_sec: float  # breathing room kept on both sides of a cut
     captions_style: Literal["word_highlight", "classic"]
@@ -29,6 +30,7 @@ PRESETS: dict[str, PresetRules] = {
         label="Dinamik Reels",
         max_shot_sec=5,
         zoom_levels=(1.0, 1.15),
+        crossfade_sec=0.12,
         remove_gap_sec=0.30,
         pad_sec=0.08,
         captions_style="word_highlight",
@@ -44,6 +46,7 @@ PRESETS: dict[str, PresetRules] = {
         label="Sokin gap",
         max_shot_sec=12,
         zoom_levels=(1.0, 1.05),
+        crossfade_sec=0.20,
         remove_gap_sec=0.50,
         pad_sec=0.10,
         captions_style="classic",
@@ -59,6 +62,7 @@ PRESETS: dict[str, PresetRules] = {
         label="Reklama",
         max_shot_sec=4,
         zoom_levels=(1.0, 1.10),
+        crossfade_sec=0.08,
         remove_gap_sec=0.30,
         pad_sec=0.08,
         captions_style="word_highlight",
@@ -74,6 +78,7 @@ PRESETS: dict[str, PresetRules] = {
         label="Vlog/hikoya",
         max_shot_sec=8,
         zoom_levels=(1.0, 1.04),
+        crossfade_sec=0.25,
         remove_gap_sec=0.60,
         pad_sec=0.12,
         captions_style="classic",

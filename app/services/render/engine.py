@@ -84,13 +84,14 @@ async def render_plan(
         async with semaphore:
             await render_clip(
                 source, clip, out_path=path, target_w=width, target_h=height, fps=fps,
-                has_audio=info.has_audio, preset=plan.export.preset, crf=plan.export.crf,
+                has_audio=info.has_audio, audio_duration_sec=info.audio_duration_sec,
+                preset=plan.export.preset, crf=plan.export.crf,
                 audio_bitrate_k=plan.export.audio_bitrate_k,
             )  # fmt: skip
 
     try:
         await asyncio.gather(*(cut(c, p) for c, p in zip(plan.clips, clip_paths, strict=True)))
-        await concat_clips(clip_paths, out_path=joined, workdir=workdir)
+        await concat_clips(clip_paths, out_path=joined, workdir=workdir, clips=plan.clips)
 
         timeline = build_timeline(plan.clips)
         ass_path: Path | None = None

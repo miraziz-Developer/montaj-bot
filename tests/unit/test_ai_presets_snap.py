@@ -161,6 +161,19 @@ def test_zoom_alternates_through_the_preset_levels() -> None:
     assert [c.reframe.zoom for c in plan.clips] == [1.0, 1.15, 1.0]
 
 
+def test_crossfade_applied_between_clips_but_never_before_the_first() -> None:
+    plan = apply_rhythm(make_plan([(0, 4), (5, 9), (10, 14)]), EMPTY, get_preset("dynamic_reels"))
+    transitions = [(c.transition_in.type, c.transition_in.duration) for c in plan.clips]
+    assert transitions == [("cut", 0.0), ("crossfade", 0.12), ("crossfade", 0.12)]
+
+
+def test_ad_commercial_and_vlog_get_their_own_crossfade_length() -> None:
+    ad = apply_rhythm(make_plan([(0, 4), (5, 9)]), EMPTY, get_preset("ad_commercial"))
+    vlog = apply_rhythm(make_plan([(0, 4), (5, 9)]), EMPTY, get_preset("vlog_story"))
+    assert ad.clips[1].transition_in.duration == pytest.approx(0.08)
+    assert vlog.clips[1].transition_in.duration == pytest.approx(0.25)
+
+
 def test_zoom_is_skipped_for_calm_presets_on_16_9() -> None:
     plan = apply_rhythm(make_plan([(0, 4), (5, 9)], aspect="16:9"), EMPTY, get_preset("clean_talk"))
     assert [c.reframe.zoom for c in plan.clips] == [1.0, 1.0]

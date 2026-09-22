@@ -117,6 +117,19 @@ def clip_no_audio(media_dir: Path) -> Path:
 
 
 @pytest.fixture(scope="session")
+def clip_audio_shorter_than_video(media_dir: Path) -> Path:
+    """6 s video, but the audio track ends at 4 s (mic cuts out before the camera stops - a real source
+    this project has hit): a clip whose window starts after 4 s has NO audio data to map."""
+    out = media_dir / "audio_shorter_than_video.mp4"
+    _ffmpeg(
+        "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=6",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+        "-map", "0:v", "-map", "1:a", *_V264, *_AAC, str(out),
+    )  # fmt: skip
+    return out
+
+
+@pytest.fixture(scope="session")
 def clip_portrait(media_dir: Path) -> Path:
     out = media_dir / "portrait.mp4"
     _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=360x640:rate=30:duration=2", *_V264, str(out))

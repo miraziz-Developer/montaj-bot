@@ -6,7 +6,13 @@ import pytest
 from app.schemas.edit_plan import Clip, ClipAudio, Reframe
 from app.services.media.ffmpeg import run_ffmpeg
 from app.services.media.probe import media_duration, probe
-from app.services.render.clip_stage import audio_filter, fill_chain, fit_blur_graph, render_clip
+from app.services.render.clip_stage import (
+    MIN_ANIMATE_SEC,
+    audio_filter,
+    fill_chain,
+    fit_blur_graph,
+    render_clip,
+)
 from app.services.render.engine import output_resolution
 
 # ---------- output_resolution ----------
@@ -47,6 +53,7 @@ def test_output_resolution_rejects_unknown_aspect() -> None:
 
 
 def test_fill_chain_is_computed_in_python_with_ffmpeg_min_max() -> None:
+    # duration omitted (0.0) -> below MIN_ANIMATE_SEC -> the exact pre-Ken-Burns static chain
     assert fill_chain(1080, 1920, Reframe()) == (
         "scale=w=1080:h=1920:force_original_aspect_ratio=increase:force_divisible_by=2,"
         "crop=1080:1920:x='min(max(iw*0.5000-540,0),iw-1080)':y='min(max(ih*0.5000-960,0),ih-1920)'"
@@ -59,6 +66,28 @@ def test_fill_chain_zoom_and_focus() -> None:
     assert (
         "x='min(max(iw*0.2500-540,0),iw-1080)'" in chain and "y='min(max(ih*0.4000-960,0),ih-1920)'" in chain
     )
+
+
+def test_fill_chain_short_clip_stays_static_even_with_duration_given() -> None:
+    """Below MIN_ANIMATE_SEC: identical to the no-`duration` (static) chain."""
+    assert fill_chain(1080, 1920, Reframe(), duration=0.2) == fill_chain(1080, 1920, Reframe())
+
+
+def test_fill_chain_animates_a_push_in_over_duration() -> None:
+    chain = fill_chain(1080, 1920, Reframe(zoom=1.0), duration=3.0)
+    # pre-scale covers the END (most zoomed-in) state: zoom * 1.08
+    assert chain.startswith("scale=w=1166:h=2074:")  # round(1080*1.08), round(1920*1.08)
+    assert "crop='min(1166.4-(86.4)*min(t/3.0000,1),iw)':'min(2073.6-(153.6)*min(t/3.0000,1),ih)'" in chain
+    assert "x='min(max(iw*0.5000-ow/2,0),iw-ow)'" in chain
+    assert "y='min(max(ih*0.5000-oh/2,0),ih-oh)'" in chain
+    assert chain.endswith(",scale=1080:1920")
+
+
+def test_fill_chain_animation_boundary_is_exactly_min_animate_sec() -> None:
+    static = fill_chain(1080, 1920, Reframe(), duration=MIN_ANIMATE_SEC - 0.001)
+    animated = fill_chain(1080, 1920, Reframe(), duration=MIN_ANIMATE_SEC)
+    assert "crop=1080:1920:" in static  # unanimated form
+    assert ",scale=1080:1920" in animated  # animated form has the trailing normalizing scale
 
 
 def test_fit_blur_graph_keeps_ffmpeg_variables_literal() -> None:
@@ -121,6 +150,28 @@ async def test_mute_keeps_an_audio_track_that_is_silent(clip_two_scenes: Path, t
     assert await _mean_volume(loud) > -40
     assert await _mean_volume(muted) < -60
     assert await media_duration(muted) == pytest.approx(2.0, abs=0.15)
+
+
+async def test_clip_past_the_audio_tracks_own_end_still_yields_a_silent_audio_stream(
+    clip_audio_shorter_than_video: Path, tmp_path: Path
+) -> None:
+    """Regression: a source can report has_audio=True yet its audio stream is SHORTER than the video (mic
+    cut out early). A clip whose window starts after the audio ends must still get a silent track, not no
+    audio stream at all - `concat`/`xfade` require every clip to have identical stream layouts."""
+    out = tmp_path / "c.mp4"
+    await render_clip(
+        clip_audio_shorter_than_video,
+        Clip(id="c1", src_in=4.5, src_out=5.5),  # entirely past the 4 s audio track
+        out_path=out,
+        target_w=360,
+        target_h=640,
+        fps=30,
+        has_audio=True,
+        audio_duration_sec=4.0,
+    )
+    info = await probe(str(out))
+    assert info.has_audio
+    assert await _mean_volume(out) < -60  # the added track is silence, not an error
 
 
 async def test_source_without_audio_still_yields_an_audio_stream(clip_no_audio: Path, tmp_path: Path) -> None:

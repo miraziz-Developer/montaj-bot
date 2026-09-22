@@ -23,6 +23,7 @@ class ProbeResult:
     video_codec: str | None
     size_bytes: int | None
     format_name: str | None
+    audio_duration_sec: float | None = None  # None: no audio stream, or its duration was unreadable
 
 
 def _parse_fps(stream: dict[str, Any]) -> float | None:
@@ -56,6 +57,13 @@ def parse_probe_output(raw_json: str) -> ProbeResult:
         duration = float(fmt.get("duration") or video.get("duration") or 0)
         width, height = int(video["width"]), int(video["height"])
         size = int(fmt["size"]) if fmt.get("size") is not None else None
+        audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+        audio_duration = None
+        if audio is not None:
+            try:
+                audio_duration = float(audio["duration"])
+            except (KeyError, ValueError, TypeError):
+                audio_duration = None  # some containers omit per-stream duration; treat as "unknown"
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise InvalidMedia() from exc
     if not math.isfinite(duration) or duration <= 0 or width <= 0 or height <= 0:
@@ -65,10 +73,11 @@ def parse_probe_output(raw_json: str) -> ProbeResult:
         width=width,
         height=height,
         fps=_parse_fps(video),
-        has_audio=any(s.get("codec_type") == "audio" for s in streams),
+        has_audio=audio is not None,
         video_codec=video.get("codec_name"),
         size_bytes=size,
         format_name=fmt.get("format_name"),
+        audio_duration_sec=audio_duration,
     )
 
 
