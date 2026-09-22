@@ -11,7 +11,8 @@ from app.bot.main import build_bot
 from app.bot.notifier import TelegramNotifier
 from app.core.config import Settings, get_settings
 from app.core.logging import setup_logging
-from app.services.ai.llm import GeminiClient
+from app.services.ai.azure_llm import AzureOpenAIClient
+from app.services.ai.llm import GeminiClient, LLMClient
 from app.services.storage import AzureBlobStorage
 from app.services.stt.azure_speech import AzureSpeechSTTProvider
 from app.services.stt.base import STTProvider
@@ -34,6 +35,14 @@ def build_stt(settings: Settings) -> STTProvider:
     raise ValueError(f"unsupported STT_PROVIDER {settings.stt_provider!r}")
 
 
+def build_llm(settings: Settings) -> LLMClient:
+    if settings.llm_provider == "gemini":
+        return GeminiClient(settings)
+    if settings.llm_provider == "azure":
+        return AzureOpenAIClient(settings)
+    raise ValueError(f"unsupported LLM_PROVIDER {settings.llm_provider!r}")
+
+
 async def on_startup(ctx: dict[str, Any]) -> None:
     setup_logging()
     settings = get_settings()
@@ -53,7 +62,7 @@ async def on_startup(ctx: dict[str, Any]) -> None:
     ctx["deps"] = WorkerDeps(
         settings=settings,
         sessionmaker=sessionmaker,
-        gemini=GeminiClient(settings),
+        gemini=build_llm(settings),
         stt=build_stt(settings),
         storage=AzureBlobStorage(settings),
         notifier=TelegramNotifier(bot, sessionmaker) if bot else LoggingNotifier(),

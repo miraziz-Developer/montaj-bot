@@ -23,7 +23,7 @@ from app.core.logging import setup_logging
 from app.models import Job, Upload
 from app.schemas.analysis import SceneAnalysis, VideoAnalysis
 from app.services.ai.analysis import analyze_full_video
-from app.services.ai.llm import GeminiClient, UsageInfo
+from app.services.ai.llm import UsageInfo
 from app.services.ai.plan_text import PlanContext, SourceInfo
 from app.services.ai.planner import build_initial_plan
 from app.services.media.pipeline import run_pre_analysis
@@ -31,7 +31,7 @@ from app.services.media.probe import probe
 from app.services.render.music import load_music_catalog
 from app.services.stt.base import STTProvider, Transcript
 from app.services.stt.fake import FakeSTTProvider
-from app.worker.main import build_stt
+from app.worker.main import build_llm, build_stt
 
 
 class MemoryStorage:
@@ -100,9 +100,21 @@ async def analyze(args: argparse.Namespace) -> dict:
         else FakeSTTProvider(default=Transcript(language="", segments=[]))
     )
     live_llm = bool(
-        settings.gemini_api_key and settings.gemini_analysis_model and settings.gemini_planner_model
+        (
+            settings.llm_provider == "gemini"
+            and settings.gemini_api_key
+            and settings.gemini_analysis_model
+            and settings.gemini_planner_model
+        )
+        or (
+            settings.llm_provider == "azure"
+            and settings.azure_openai_api_key
+            and settings.azure_openai_endpoint
+            and settings.azure_analysis_deployment
+            and settings.azure_planner_deployment
+        )
     )
-    gemini = GeminiClient(settings) if live_llm else NoLLM()
+    gemini = build_llm(settings) if live_llm else NoLLM()
 
     workdir = Path(tempfile.mkdtemp(prefix="dev_analyze_"))
     try:

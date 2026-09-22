@@ -43,12 +43,17 @@ class Settings(BaseSettings):
     revision_cost_units: int = 1
     max_active_jobs_per_user: int = 2
 
+    llm_provider: str = "gemini"
     gemini_api_key: str = ""
     gemini_analysis_model: str = ""
     gemini_planner_model: str = ""
     gemini_analysis_fps: float = 1.0
     gemini_analysis_fps_long: float = 0.5
     gemini_media_resolution: str = "low"
+    azure_openai_api_key: str = ""
+    azure_openai_endpoint: str = ""
+    azure_analysis_deployment: str = ""
+    azure_planner_deployment: str = ""
     llm_max_concurrency: int = 2
     analysis_chunk_sec: int = 600
     long_video_threshold_sec: int = 1200
