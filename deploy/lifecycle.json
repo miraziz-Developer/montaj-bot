@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "enabled": true,
+      "name": "delete-user-files-after-2-days",
+      "type": "Lifecycle",
+      "definition": {
+        "actions": {
+          "baseBlob": {
+            "delete": { "daysAfterCreationGreaterThan": 2 }
+          }
+        },
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["uploads/", "artifacts/", "outputs/"]
+        }
+      }
+    }
+  ]
+}

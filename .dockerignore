@@ -1,0 +1,18 @@
+# Secrets must never be baked into an image layer (the Dockerfile does `COPY . .`).
+.env
+.env.*
+!.env.example
+deploy/*.env
+!deploy/*.env.example
+
+.git
+.gitignore
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+pgdata
+tmp
+node_modules
+.DS_Store

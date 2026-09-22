@@ -1,0 +1,101 @@
+# Production overrides for ONE small VM. Use together with the base file:
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml <command>
+#
+# Requires compose >= 2.24 (`!reset` / `!override`). Real Azure Blob is used: AZURE_STORAGE_CONNECTION_STRING
+# in .env points at the real storage account, and Azurite never starts.
+#
+# Memory limits assume a 4 GB VM (Standard_B2s). Tune them with the *_MEM_LIMIT variables in .env.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  db:
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (and use it in DATABASE_URL)}
+    mem_limit: ${DB_MEM_LIMIT:-512m}
+    logging: *logging
+
+  redis:
+    restart: unless-stopped
+    mem_limit: ${REDIS_MEM_LIMIT:-128m}
+    logging: *logging
+
+  azurite:
+    profiles: ["dev-only"]  # dev storage emulator: never started in production
+
+  telegram-bot-api:
+    profiles: !reset []  # the local Bot API server is required in production (files up to 2 GB)
+    restart: unless-stopped
+    mem_limit: ${TGAPI_MEM_LIMIT:-384m}
+    logging: *logging
+
+  api:
+    image: montaj-bot:latest  # built once here, reused by bot and worker
+    command: >
+      uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --workers 1
+      --proxy-headers --forwarded-allow-ips "*"
+    ports: !reset []  # only Caddy is reachable from the internet
+    volumes: !reset []  # no source bind mount, no --reload
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    mem_limit: ${API_MEM_LIMIT:-384m}
+    logging: *logging
+
+  bot:
+    image: montaj-bot:latest
+    build: !reset null
+    profiles: !reset []
+    volumes: !reset []
+    restart: unless-stopped
+    mem_limit: ${BOT_MEM_LIMIT:-192m}
+    logging: *logging
+
+  worker:
+    image: montaj-bot:latest
+    build: !reset null
+    profiles: !reset []
+    # Renders and downloads land in TMP_DIR: keep them on a named volume, not in the container layer.
+    volumes: !override
+      - montaj_tmp:/tmp/montaj
+    restart: unless-stopped
+    mem_limit: ${WORKER_MEM_LIMIT:-1536m}
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN in .env (the DNS name pointing at this VM)}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data  # certificates: losing it means re-issuing (Let's Encrypt rate limits)
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    mem_limit: ${CADDY_MEM_LIMIT:-64m}
+    logging: *logging
+
+volumes:
+  montaj_tmp:
+  caddy_data:
+  caddy_config:

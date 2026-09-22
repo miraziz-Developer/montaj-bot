@@ -1,0 +1,84 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: montaj
+      POSTGRES_PASSWORD: montaj
+      POSTGRES_DB: montaj
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U montaj -d montaj"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command: azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck --loose
+    ports:
+      - "10000:10000"
+
+  telegram-bot-api:
+    # env names verified against the image README (aiogram/telegram-bot-api)
+    image: aiogram/telegram-bot-api:latest
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_LOCAL: "1"
+    volumes:
+      - tgapi-data:/var/lib/telegram-bot-api
+    profiles: ["tgapi"]
+
+  api:
+    build: .
+    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  bot:
+    build: .
+    command: python -m app.bot.main
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    profiles: ["bot"]
+
+  worker:
+    build: .
+    command: arq app.worker.main.WorkerSettings
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    profiles: ["worker"]
+
+volumes:
+  pgdata:
+  tgapi-data:

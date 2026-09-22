@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="uz">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Montaj Bot</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  </head>
+  <body>
+    <main id="app">
+      <section id="screen-loading" class="screen center" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <p id="loading-text"></p>
+      </section>
+
+      <section id="screen-home" class="screen center" hidden>
+        <h1 id="home-balance"></h1>
+        <p id="home-trial" class="badge" hidden></p>
+        <button id="pick-btn" class="btn primary big" type="button"></button>
+        <input id="file-input" type="file" accept="video/*,.mkv,.avi" hidden />
+      </section>
+
+      <section id="screen-uploading" class="screen center" hidden>
+        <p id="upload-name" class="filename"></p>
+        <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="upload-fill" class="fill"></div>
+        </div>
+        <p id="upload-percent" class="percent">0%</p>
+        <p id="upload-meta" class="hint"></p>
+        <button id="upload-cancel" class="btn secondary" type="button"></button>
+      </section>
+
+      <section id="screen-verifying" class="screen center" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <p id="verifying-text"></p>
+      </section>
+
+      <section id="screen-confirm" class="screen" hidden>
+        <div class="card summary">
+          <p id="confirm-duration"></p>
+          <p id="confirm-resolution"></p>
+          <p id="confirm-price" class="strong"></p>
+          <p id="confirm-balance" class="hint"></p>
+          <p id="confirm-warning" class="warning" hidden></p>
+        </div>
+        <h2 id="format-title"></h2>
+        <div id="format-cards" class="cards"></div>
+        <h2 id="style-title"></h2>
+        <div id="style-cards" class="cards column"></div>
+        <label class="brief">
+          <span id="brief-label"></span>
+          <textarea id="brief" maxlength="500" rows="3"></textarea>
+        </label>
+        <button id="start-btn" class="btn primary big" type="button"></button>
+        <button id="tariffs-btn" class="btn primary big" type="button" hidden></button>
+      </section>
+
+      <section id="screen-done" class="screen center" hidden>
+        <p id="done-text" class="done"></p>
+      </section>
+
+      <section id="screen-error" class="screen center" hidden>
+        <p id="error-text" class="error"></p>
+        <button id="error-tariffs" class="btn primary" type="button" hidden></button>
+        <button id="error-retry" class="btn primary" type="button"></button>
+        <button id="error-close" class="btn secondary" type="button"></button>
+      </section>
+    </main>
+    <footer id="footer"></footer>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

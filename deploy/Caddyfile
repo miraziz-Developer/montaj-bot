@@ -1,0 +1,27 @@
+# Automatic HTTPS (Let's Encrypt) for the domain in $PUBLIC_DOMAIN. The DNS A record must already point
+# at this VM and ports 80/443 must be open, otherwise certificate issuance fails.
+{$PUBLIC_DOMAIN} {
+	encode zstd gzip
+
+	# The Mini App does NOT upload videos through this server: the browser sends blocks straight to Azure Blob.
+	# What is left is small JSON, so a modest limit is enough.
+	request_body {
+		max_size 20MB
+	}
+
+	# No X-Frame-Options: Telegram clients embed the Mini App in a web view.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# The Mini App (/app/) and the API (/api/, /health) are one FastAPI application.
+	reverse_proxy api:8000
+
+	log {
+		output stdout
+		format console
+	}
+}
