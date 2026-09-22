@@ -170,13 +170,18 @@ async def test_client_errors_are_not_retried() -> None:
 
 
 async def test_missing_configuration_fails_before_any_call() -> None:
+    # explicit empty overrides: a real GEMINI_* value in the dev/CI process environment must not leak in and
+    # make this "unconfigured" scenario accidentally configured (_env_file=None only skips the .env file).
     sdk = FakeSDK([])
-    unconfigured = GeminiClient(Settings(_env_file=None, gemini_api_key="k"), client=sdk)
+    unconfigured = GeminiClient(
+        Settings(_env_file=None, gemini_api_key="k", gemini_planner_model="", gemini_analysis_model=""),
+        client=sdk,
+    )
     with pytest.raises(AIError, match="GEMINI_PLANNER_MODEL"):
         await unconfigured.plan(context={})
     with pytest.raises(AIError, match="GEMINI_ANALYSIS_MODEL"):
         await _analyze(unconfigured)
-    no_key = GeminiClient(Settings(_env_file=None, gemini_planner_model="m"))
+    no_key = GeminiClient(Settings(_env_file=None, gemini_api_key="", gemini_planner_model="m"))
     with pytest.raises(AIError, match="GEMINI_API_KEY"):
         await no_key.plan(context={})
     assert sdk.generate_calls == []

@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 from app.core.logging import setup_logging
 from app.services.ai.llm import GeminiClient
 from app.services.storage import AzureBlobStorage
+from app.services.stt.azure_speech import AzureSpeechSTTProvider
 from app.services.stt.base import STTProvider
 from app.services.stt.groq_whisper import GroqSTTProvider
 from app.worker.deps import WorkerDeps
@@ -27,6 +28,9 @@ _settings = get_settings()
 def build_stt(settings: Settings) -> STTProvider:
     if settings.stt_provider == "groq":
         return GroqSTTProvider(settings.groq_api_key, settings.groq_stt_model)
+    if settings.stt_provider == "azure":
+        locales = [loc.strip() for loc in settings.azure_speech_locales.split(",") if loc.strip()]
+        return AzureSpeechSTTProvider(settings.azure_speech_api_key, settings.azure_speech_endpoint, locales)
     raise ValueError(f"unsupported STT_PROVIDER {settings.stt_provider!r}")
 
 

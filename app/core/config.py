@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     stt_provider: str = "groq"
     groq_api_key: str = ""
     groq_stt_model: str = "whisper-large-v3-turbo"
+    azure_speech_api_key: str = ""
+    azure_speech_endpoint: str = ""
+    azure_speech_locales: str = "uz-UZ,ru-RU"
     stt_concurrency: int = 3
 
     worker_concurrency: int = 1

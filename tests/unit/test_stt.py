@@ -3,6 +3,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from app.services.stt.azure_speech import AzureSpeechSTTProvider
 from app.services.stt.base import STTError, Transcript, TranscriptSegment, Word
 from app.services.stt.fake import FakeSTTProvider
 from app.services.stt.groq_whisper import GroqSTTProvider
@@ -213,3 +214,148 @@ async def test_groq_without_an_api_key_fails_clearly_before_any_request(audio: P
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     with pytest.raises(STTError, match="GROQ_API_KEY"):
         await GroqSTTProvider("", "m", client=client).transcribe(audio, language_hint=None)
+
+
+# ---------- Azure Speech response parsing ----------
+
+AZURE_OK = {
+    "durationMilliseconds": 3374,
+    "combinedPhrases": [{"text": "salom dunyo"}],
+    "phrases": [
+        {
+            "offsetMilliseconds": 100,
+            "durationMilliseconds": 1800,
+            "text": "salom dunyo",
+            "locale": "uz-UZ",
+            "confidence": 0.9,
+            "words": [
+                {"text": "salom", "offsetMilliseconds": 100, "durationMilliseconds": 400},
+                {"text": "dunyo", "offsetMilliseconds": 600, "durationMilliseconds": 500},
+            ],
+        }
+    ],
+}
+
+
+def test_azure_parse_response_maps_offsets_to_seconds_and_picks_locale() -> None:
+    t = AzureSpeechSTTProvider.parse_response(AZURE_OK)
+    assert t.language == "uz-UZ"
+    [segment] = t.segments
+    assert (round(segment.start, 6), round(segment.end, 6), segment.text) == (0.1, 1.9, "salom dunyo")
+    assert [(w.text, w.start, w.end) for w in segment.words] == [
+        ("salom", 0.1, 0.5), ("dunyo", 0.6, 1.1),
+    ]  # fmt: skip
+
+
+def test_azure_parse_response_empty_phrases() -> None:
+    t = AzureSpeechSTTProvider.parse_response({"durationMilliseconds": 1000, "phrases": []})
+    assert t.language == "" and t.segments == []
+
+
+def _azure_provider(handler, sleeps: list[float] | None = None) -> AzureSpeechSTTProvider:
+    async def sleep(seconds: float) -> None:
+        if sleeps is not None:
+            sleeps.append(seconds)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return AzureSpeechSTTProvider(
+        "SECRET-KEY",
+        "https://proj.cognitiveservices.azure.com",
+        ["uz-UZ", "ru-RU"],
+        client=client,
+        sleep=sleep,
+    )
+
+
+async def test_azure_request_shape(audio: Path) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=AZURE_OK)
+
+    transcript = await _azure_provider(handler).transcribe(audio, language_hint=None)
+    [request] = seen
+    body = request.content
+    assert request.headers["ocp-apim-subscription-key"] == "SECRET-KEY"
+    assert str(request.url) == (
+        "https://proj.cognitiveservices.azure.com/speechtotext/transcriptions:transcribe?api-version=2024-11-15"
+    )
+    assert b'name="definition"' in body and b"uz-UZ" in body and b"ru-RU" in body
+    assert b'name="audio"' in body and b'filename="audio_000.ogg"' in body and b"audio/ogg" in body
+    assert transcript.all_words()[0].text == "salom"
+
+
+async def test_azure_uses_wav_mimetype_for_non_ogg_files(tmp_path: Path) -> None:
+    path = tmp_path / "clip.wav"
+    path.write_bytes(b"RIFF-fake-wav")
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=AZURE_OK)
+
+    await _azure_provider(handler).transcribe(path, language_hint=None)
+    assert b"audio/wav" in seen[0].content and b"audio/ogg" not in seen[0].content
+
+
+async def test_azure_language_hint_overrides_configured_locales(audio: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert b"en-US" in request.content and b"uz-UZ" not in request.content
+        return httpx.Response(200, json=AZURE_OK)
+
+    await _azure_provider(handler).transcribe(audio, language_hint="en-US")
+
+
+async def test_azure_retries_5xx_then_succeeds(audio: Path) -> None:
+    calls, sleeps = [], []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503) if len(calls) < 3 else httpx.Response(200, json=AZURE_OK)
+
+    await _azure_provider(handler, sleeps).transcribe(audio, language_hint=None)
+    assert len(calls) == 3 and sleeps == [1, 2]
+
+
+async def test_azure_gives_up_after_three_attempts(audio: Path) -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(429, text="slow down")
+
+    with pytest.raises(STTError, match="429"):
+        await _azure_provider(handler).transcribe(audio, language_hint=None)
+    assert len(calls) == 3
+
+
+async def test_azure_client_errors_are_not_retried_and_never_leak_the_key(audio: Path) -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(401, text="invalid api key")
+
+    with pytest.raises(STTError) as exc:
+        await _azure_provider(handler).transcribe(audio, language_hint=None)
+    assert len(calls) == 1 and "SECRET-KEY" not in str(exc.value)
+
+
+async def test_azure_without_an_api_key_fails_clearly_before_any_request(audio: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request may be sent without a key")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(STTError, match="AZURE_SPEECH_API_KEY"):
+        await AzureSpeechSTTProvider("", "https://x", ["uz-UZ"], client=client).transcribe(
+            audio, language_hint=None
+        )
+
+
+async def test_azure_without_an_endpoint_fails_clearly(audio: Path) -> None:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=AZURE_OK)))
+    with pytest.raises(STTError, match="AZURE_SPEECH_ENDPOINT"):
+        await AzureSpeechSTTProvider("key", "", ["uz-UZ"], client=client).transcribe(
+            audio, language_hint=None
+        )

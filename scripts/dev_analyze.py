@@ -1,7 +1,8 @@
 """Analyse a LOCAL video and print the resulting EditPlan JSON (no Telegram, no Postgres, no Blob).
 
-For fast iteration on prompts. Uses the REAL Gemini / Groq providers when GEMINI_API_KEY (+ models) /
-GROQ_API_KEY are set; otherwise an empty transcript and the deterministic fallback planner.
+For fast iteration on prompts. Uses the REAL Gemini provider when GEMINI_API_KEY (+ models) are set, and the
+REAL STT provider configured via STT_PROVIDER (groq/azure, with its own key); otherwise an empty transcript
+and the deterministic fallback planner.
 
     docker compose run --rm api python scripts/dev_analyze.py /app/some_video.mp4 --style dynamic_reels
 """
@@ -30,7 +31,7 @@ from app.services.media.probe import probe
 from app.services.render.music import load_music_catalog
 from app.services.stt.base import STTProvider, Transcript
 from app.services.stt.fake import FakeSTTProvider
-from app.services.stt.groq_whisper import GroqSTTProvider
+from app.worker.main import build_stt
 
 
 class MemoryStorage:
@@ -90,9 +91,12 @@ async def analyze(args: argparse.Namespace) -> dict:
     storage = MemoryStorage()
     storage.blobs[(settings.azure_uploads_container, upload.blob_path)] = args.video.read_bytes()
 
+    stt_configured = (settings.stt_provider == "groq" and settings.groq_api_key) or (
+        settings.stt_provider == "azure" and settings.azure_speech_api_key and settings.azure_speech_endpoint
+    )
     stt: STTProvider = (
-        GroqSTTProvider(settings.groq_api_key, settings.groq_stt_model)
-        if settings.groq_api_key
+        build_stt(settings)
+        if stt_configured
         else FakeSTTProvider(default=Transcript(language="", segments=[]))
     )
     live_llm = bool(
