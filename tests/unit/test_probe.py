@@ -93,6 +93,47 @@ def test_parse_ntsc_fps_and_fields() -> None:
     assert (result.duration_sec, result.size_bytes, result.format_name) == (12.5, 999, "mp4")
 
 
+def _video(**fields: object) -> str:
+    return _payload(streams=[{"codec_type": "video", "width": 1920, "height": 1080, **fields}])
+
+
+@pytest.mark.parametrize(
+    ("fields", "size", "rotation"),
+    [
+        ({}, (1920, 1080), 0),
+        ({"side_data_list": [{"side_data_type": "Display Matrix", "rotation": -90}]}, (1080, 1920), 270),
+        ({"side_data_list": [{"side_data_type": "Display Matrix", "rotation": 90}]}, (1080, 1920), 90),
+        ({"side_data_list": [{"rotation": 180}]}, (1920, 1080), 180),  # upside down: size unchanged
+        ({"tags": {"rotate": "90"}}, (1080, 1920), 90),  # older files use a tag instead of side data
+        ({"tags": {"rotate": "garbage"}}, (1920, 1080), 0),
+    ],
+)
+def test_parse_reports_display_size_for_rotated_phone_video(
+    fields: dict, size: tuple[int, int], rotation: int
+) -> None:
+    result = parse_probe_output(_video(**fields))
+    assert ((result.width, result.height), result.rotation) == (size, rotation)
+
+
+@pytest.mark.parametrize(
+    ("transfer", "hdr"),
+    [("arib-std-b67", True), ("smpte2084", True), ("bt709", False), (None, False)],
+)
+def test_parse_flags_hdr_transfer_characteristics(transfer: str | None, hdr: bool) -> None:
+    fields = {} if transfer is None else {"color_transfer": transfer}
+    assert parse_probe_output(_video(**fields)).is_hdr is hdr
+
+
+async def test_probe_real_rotated_file_reports_display_size(tmp_path: Path) -> None:
+    stored, rotated = tmp_path / "stored.mp4", tmp_path / "rotated.mp4"
+    _ffmpeg(
+        "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30", "-t", "1", "-pix_fmt", "yuv420p", str(stored)
+    )
+    _ffmpeg("-display_rotation:v:0", "90", "-i", str(stored), "-c", "copy", str(rotated))
+    result = await probe(str(rotated))
+    assert (result.width, result.height, result.rotation) == (360, 640, 90)
+
+
 @pytest.mark.parametrize(
     "payload",
     [

@@ -61,8 +61,24 @@ def fill_chain(target_w: int, target_h: int, reframe: Reframe, *, duration: floa
     )
 
 
+def hdr_to_sdr() -> str:
+    """Tone-map PQ/HLG (iPhone / recent Android HDR) to SDR BT.709. Without this the 10-bit HDR code values
+    are squeezed into an SDR file untouched and the picture looks flat and washed out. Linear-light
+    tone-mapping (hable) keeps highlights instead of clipping them."""
+    return (
+        "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
+        "zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+    )
+
+
 def fit_blur_graph(
-    target_w: int, target_h: int, speed: float, fps: int, *, inscribed_square: bool = False
+    target_w: int,
+    target_h: int,
+    speed: float,
+    fps: int,
+    *,
+    inscribed_square: bool = False,
+    hdr: bool = False,
 ) -> str:
     """Whole frame visible over a blurred, cropped copy of itself. `W`,`H`,`w`,`h` are ffmpeg variables.
 
@@ -71,11 +87,12 @@ def fit_blur_graph(
     circle contains only real picture, so it is cropped out FIRST and then treated like any square clip
     (full-width foreground over a darkened blur of itself) - it reads as ordinary footage, not a widget."""
     w, h = target_w, target_h
+    lead = f"{hdr_to_sdr()}," if hdr else ""
     if inscribed_square:
         side = f"'trunc(min(iw,ih)*{ROUND_NOTE_INSCRIBED_FRACTION}/2)*2'"
         crop = f"crop=w={side}:h={side}:x='(iw-ow)/2':y='(ih-oh)/2'"
         return (
-            f"[0:v]{crop},{color_polish()}[polished];"
+            f"[0:v]{lead}{crop},{color_polish()}[polished];"
             f"[polished]split=2[a][b];"
             f"[a]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=30:8,"
             f"eq=brightness=-0.08:saturation=1.1[bg];"
@@ -84,7 +101,7 @@ def fit_blur_graph(
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setpts=PTS/{speed:g},fps={fps},format=yuv420p[v]"
         )
     return (
-        f"[0:v]{color_polish()}[polished];"
+        f"[0:v]{lead}{color_polish()}[polished];"
         f"[polished]split=2[a][b];"
         f"[a]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=20:5[bg];"
         f"[b]scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg];"
@@ -133,6 +150,7 @@ async def render_clip(
     audio_duration_sec: float | None = None,
     audio_source: Path | None = None,
     round_note: bool = False,
+    hdr: bool = False,
     preset: str = "veryfast",
     crf: int = 21,
     audio_bitrate_k: int = 160,
@@ -182,13 +200,14 @@ async def render_clip(
         audio_map = "0:a:0"
 
     if clip.reframe.mode == "fit_blur" or round_note:  # `fill`'s crop would show the circle's corners
-        graph = fit_blur_graph(target_w, target_h, clip.speed, fps, inscribed_square=round_note)
+        graph = fit_blur_graph(target_w, target_h, clip.speed, fps, inscribed_square=round_note, hdr=hdr)
         args += ["-filter_complex", graph, "-map", "[v]"]
     else:
         chain = fill_chain(target_w, target_h, clip.reframe, duration=src_dur)
         args += [
             "-vf",
-            f"{stabilize()},{color_polish()},{chain},setpts=PTS/{clip.speed:g},fps={fps},format=yuv420p",
+            f"{hdr_to_sdr() + ',' if hdr else ''}{stabilize()},{color_polish()},{chain},"
+            f"setpts=PTS/{clip.speed:g},fps={fps},format=yuv420p",
             "-map", "0:v:0",
         ]  # fmt: skip
     args += ["-af", audio_filter(clip), "-map", audio_map, "-t", f"{out_dur:.3f}"]

@@ -24,6 +24,10 @@ class ProbeResult:
     size_bytes: int | None
     format_name: str | None
     audio_duration_sec: float | None = None  # None: no audio stream, or its duration was unreadable
+    # width/height above are DISPLAY size: phones store landscape pixels plus a rotation flag, and ffmpeg
+    # auto-rotates on decode, so a portrait phone video is 1080x1920 here even though it is stored 1920x1080.
+    rotation: int = 0  # display rotation in degrees (0/90/180/270)
+    is_hdr: bool = False  # PQ/HLG transfer: must be tone-mapped to SDR or it renders washed out
 
 
 def looks_like_round_video_note(width: int | None, height: int | None) -> bool:
@@ -51,6 +55,22 @@ def _parse_fps(stream: dict[str, Any]) -> float | None:
     return None
 
 
+_HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
+
+
+def _display_rotation(video: dict[str, Any]) -> int:
+    """Rotation the player applies, normalised to 0/90/180/270. Modern files carry a Display Matrix side
+    data entry (negative = clockwise in ffprobe's convention); old ones carry a `rotate` tag."""
+    raw: Any = (video.get("tags") or {}).get("rotate")
+    for side in video.get("side_data_list") or []:
+        if "rotation" in side:
+            raw = side["rotation"]
+    try:
+        return int(round(float(raw))) % 360 if raw is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def parse_probe_output(raw_json: str) -> ProbeResult:
     """Turn `ffprobe -print_format json` output into a ProbeResult; raise InvalidMedia if unusable."""
     try:
@@ -69,6 +89,9 @@ def parse_probe_output(raw_json: str) -> ProbeResult:
             raise InvalidMedia()
         duration = float(fmt.get("duration") or video.get("duration") or 0)
         width, height = int(video["width"]), int(video["height"])
+        rotation = _display_rotation(video)
+        if rotation in (90, 270):
+            width, height = height, width
         size = int(fmt["size"]) if fmt.get("size") is not None else None
         audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
         audio_duration = None
@@ -91,6 +114,8 @@ def parse_probe_output(raw_json: str) -> ProbeResult:
         size_bytes=size,
         format_name=fmt.get("format_name"),
         audio_duration_sec=audio_duration,
+        rotation=rotation,
+        is_hdr=video.get("color_transfer") in _HDR_TRANSFERS,
     )
 
 

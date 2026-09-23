@@ -155,6 +155,50 @@ async def test_multi_source_broll_clip_renders_with_dubbed_primary_audio(
     assert info.duration_sec == pytest.approx(2.0, abs=0.3) == stats.duration_sec
 
 
+async def test_portrait_phone_video_stored_landscape_keeps_a_portrait_original_aspect(
+    clip_two_scenes: Path, tmp_path: Path, assets: Path
+) -> None:
+    """Regression: phones store landscape pixels + a rotation flag. Sizing "original" output from the STORED
+    size made a portrait video render landscape (and crop it badly)."""
+    phone = tmp_path / "phone.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-display_rotation:v:0", "90", "-i", str(clip_two_scenes),
+         "-c", "copy", str(phone)],
+        check=True,
+    )  # fmt: skip
+    out = tmp_path / "final.mp4"
+    await render_plan(
+        source=phone, plan=make_plan([(0.0, 2.0)], aspect="original", captions=Captions(enabled=False)),
+        transcript=TRANSCRIPT, workdir=tmp_path / "w", out_path=out, assets_dir=assets, max_short_side=360,
+    )  # fmt: skip
+    info = await probe(str(out))
+    assert (info.width, info.height) == (360, 640)
+
+
+async def test_hdr_source_is_tone_mapped_to_bt709_sdr(tmp_path: Path, assets: Path) -> None:
+    hdr = tmp_path / "hdr.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=2",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-vf", "format=yuv420p10le",
+         "-c:v", "libx264", "-preset", "ultrafast", "-profile:v", "high10",
+         "-x264-params", "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc", "-c:a", "aac",
+         str(hdr)],
+        check=True,
+    )  # fmt: skip
+    assert (await probe(str(hdr))).is_hdr
+    out = tmp_path / "final.mp4"
+    await render_plan(
+        source=hdr, plan=make_plan([(0.0, 1.5)], captions=Captions(enabled=False)), transcript=TRANSCRIPT,
+        workdir=tmp_path / "w", out_path=out, assets_dir=assets, max_short_side=360,
+    )  # fmt: skip
+    tags = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=pix_fmt,color_transfer,color_primaries", "-of", "default=nw=1", str(out)],
+        check=True, capture_output=True, text=True,
+    ).stdout  # fmt: skip
+    assert "pix_fmt=yuv420p" in tags and "color_transfer=bt709" in tags and "color_primaries=bt709" in tags
+
+
 async def test_source_without_audio(clip_no_audio: Path, tmp_path: Path, assets: Path) -> None:
     plan = make_plan([(0.0, 2.0)], captions=Captions(enabled=False))
     out = tmp_path / "final.mp4"

@@ -97,6 +97,7 @@ async def render_plan(
                 has_audio=clip_info.has_audio, audio_duration_sec=clip_info.audio_duration_sec,
                 audio_source=sources["primary"] if clip.audio.source == "primary" else None,
                 round_note=looks_like_round_video_note(clip_info.width, clip_info.height),
+                hdr=clip_info.is_hdr,
                 preset=plan.export.preset, crf=plan.export.crf,
                 audio_bitrate_k=plan.export.audio_bitrate_k,
             )  # fmt: skip
