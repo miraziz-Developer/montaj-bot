@@ -10,7 +10,7 @@ from pathlib import Path
 from app.core.config import get_settings
 from app.core.errors import RenderError
 from app.schemas.edit_plan import EditPlan
-from app.services.media.probe import probe
+from app.services.media.probe import looks_like_round_video_note, probe
 from app.services.render.captions_ass import build_ass, build_timeline, has_events
 from app.services.render.clip_stage import render_clip
 from app.services.render.concat_stage import concat_clips
@@ -79,7 +79,8 @@ async def render_plan(
     joined = workdir / "joined.mp4"
     concurrency = clip_concurrency or get_settings().render_clip_concurrency
 
-    info = await probe(str(sources["primary"]))
+    infos = {source_id: await probe(str(path)) for source_id, path in sources.items()}
+    info = infos["primary"]
     width, height = output_resolution(
         plan.target.aspect, info.width, info.height, max_short_side=max_short_side
     )
@@ -90,12 +91,12 @@ async def render_plan(
     async def cut(clip, path: Path) -> None:  # noqa: ANN001
         async with semaphore:
             clip_source = sources[clip.source_id]
-            is_primary = clip.source_id == "primary"
+            clip_info = infos[clip.source_id]
             await render_clip(
                 clip_source, clip, out_path=path, target_w=width, target_h=height, fps=fps,
-                has_audio=info.has_audio if is_primary else None,
-                audio_duration_sec=info.audio_duration_sec if is_primary else None,
+                has_audio=clip_info.has_audio, audio_duration_sec=clip_info.audio_duration_sec,
                 audio_source=sources["primary"] if clip.audio.source == "primary" else None,
+                round_note=looks_like_round_video_note(clip_info.width, clip_info.height),
                 preset=plan.export.preset, crf=plan.export.crf,
                 audio_bitrate_k=plan.export.audio_bitrate_k,
             )  # fmt: skip

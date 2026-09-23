@@ -1,4 +1,5 @@
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,13 @@ def test_fit_blur_graph_keeps_ffmpeg_variables_literal() -> None:
     assert "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[bg]" in graph
 
 
+def test_fit_blur_graph_inscribed_square_crops_before_anything_else() -> None:
+    graph = fit_blur_graph(1080, 1920, 1.0, 30, inscribed_square=True)
+    assert graph.startswith("[0:v]crop=w='trunc(min(iw,ih)*0.68/2)*2'")
+    assert "flags=lanczos" in graph and graph.endswith("format=yuv420p[v]")
+    assert fit_blur_graph(1080, 1920, 1.0, 30) == fit_blur_graph(1080, 1920, 1.0, 30, inscribed_square=False)
+
+
 def test_audio_filter_omits_atempo_at_normal_speed_and_mutes_with_volume_zero() -> None:
     assert audio_filter(Clip(id="c", src_in=0, src_out=2)) == (
         "volume=1,aresample=48000,aformat=channel_layouts=stereo,apad"
@@ -175,6 +183,34 @@ async def test_primary_dub_audio_is_pulled_from_audio_source_not_the_clips_own_f
     assert info.has_audio
     assert await _mean_volume(out) > -40  # clip_two_scenes' tone, not silence
     assert await media_duration(out) == pytest.approx(2.0, abs=0.15)
+
+
+def _pixel(path: Path, x: int, y: int) -> tuple[int, int, int]:
+    """RGB of a 4x4 patch (averaged) at x,y of the file's first frame."""
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1",
+         "-vf", f"crop=4:4:{x}:{y},scale=1:1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        check=True, capture_output=True,
+    ).stdout  # fmt: skip
+    return raw[0], raw[1], raw[2]
+
+
+async def test_round_video_note_shows_only_real_picture_no_white_corner_box(
+    clip_round_note: Path, tmp_path: Path
+) -> None:
+    """Regression (real user complaint): a round Telegram note rendered whole showed its white mask corners
+    as a hard-edged box between two blur bands. With `round_note` the inscribed square is cropped out first,
+    so the foreground's corners are the real (red) picture. 360x640 target: the square is y=140..500."""
+    kw = {"target_w": 360, "target_h": 640, "fps": 30}
+    clip = Clip(id="c", src_in=0, src_out=1.5, reframe=Reframe(mode="fit_blur"))
+    old, new = tmp_path / "old.mp4", tmp_path / "new.mp4"
+    await render_clip(clip_round_note, clip, out_path=old, round_note=False, **kw)
+    await render_clip(clip_round_note, clip, out_path=new, round_note=True, **kw)
+
+    corner_old, corner_new = _pixel(old, 6, 146), _pixel(new, 6, 146)
+    assert min(corner_old) > 200  # the old whole-frame path: white mask corner inside the frame
+    assert corner_new[0] > 200 and corner_new[1] < 90 and corner_new[2] < 90  # now: real red picture
+    assert _pixel(new, 350, 492)[1] < 90  # opposite corner too
 
 
 async def test_clip_past_the_audio_tracks_own_end_still_yields_a_silent_audio_stream(

@@ -117,6 +117,21 @@ def clip_no_audio(media_dir: Path) -> Path:
 
 
 @pytest.fixture(scope="session")
+def clip_round_note(media_dir: Path) -> Path:
+    """3 s, 400x400 like a Telegram round video note: solid RED picture inside a circle, WHITE baked into
+    every pixel outside it (the mask), sine audio."""
+    out = media_dir / "round_note.mp4"
+    inside = "lte(hypot(X-200,Y-200),200)"
+    _ffmpeg(
+        "-f", "lavfi", "-i", "color=c=red:s=400x400:r=30:d=3,format=rgb24,"
+        f"geq=r='255':g='if({inside},0,255)':b='if({inside},0,255)'",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+        *_V264, *_AAC, str(out),
+    )  # fmt: skip
+    return out
+
+
+@pytest.fixture(scope="session")
 def clip_audio_shorter_than_video(media_dir: Path) -> Path:
     """6 s video, but the audio track ends at 4 s (mic cuts out before the camera stops - a real source
     this project has hit): a clip whose window starts after 4 s has NO audio data to map."""

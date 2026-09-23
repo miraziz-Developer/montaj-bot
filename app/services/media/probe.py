@@ -26,6 +26,19 @@ class ProbeResult:
     audio_duration_sec: float | None = None  # None: no audio stream, or its duration was unreadable
 
 
+def looks_like_round_video_note(width: int | None, height: int | None) -> bool:
+    """Telegram "video note" round messages (and clips re-saved from them) are always exactly square and
+    small, with the real picture circle-masked - corner pixels outside the circle are baked in (white or
+    black). A small square is the only cheap, reliable signal without pixel analysis: genuine square
+    footage from a phone or camera is essentially never this small, but a video note commonly is
+    (Telegram renders these around 240-640px)."""
+    if not width or not height:
+        return False
+    is_square = abs(width - height) / max(width, height) < 0.02
+    is_small = min(width, height) <= 640
+    return is_square and is_small
+
+
 def _parse_fps(stream: dict[str, Any]) -> float | None:
     for key in ("avg_frame_rate", "r_frame_rate"):
         num, _, den = str(stream.get(key, "")).partition("/")
