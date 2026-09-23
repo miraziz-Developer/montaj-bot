@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     render_preset: str = "veryfast"
     render_crf: int = 21
     render_clip_concurrency: int = 2
+    # ffmpeg `deshake` costs ~57% of clip render time and fights deliberate pans; off until validated on
+    # real shaky footage.
+    render_stabilize: bool = False
     deliver_max_inline_bytes: int = 1_900_000_000  # bigger results (or failed sends) become a 48 h link
     tmp_dir: str = "/tmp/montaj"
     assets_dir: str = "/app/assets"

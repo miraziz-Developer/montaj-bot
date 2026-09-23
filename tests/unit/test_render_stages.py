@@ -65,7 +65,8 @@ def test_all_cut_transitions_produce_plain_concat_pairs() -> None:
     clips = [_clip(), _clip(), _clip()]
     filter_complex, v, a = build_transition_filter_complex([2.0, 3.0, 1.5], clips)
     assert filter_complex == (
-        "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v1][a1];[v1][a1][2:v][2:a]concat=n=2:v=1:a=1[v2][a2]"
+        "[0:v]settb=AVTB[sv0];[1:v]settb=AVTB[sv1];[2:v]settb=AVTB[sv2];"
+        "[sv0][0:a][sv1][1:a]concat=n=2:v=1:a=1[v1][a1];[v1][a1][sv2][2:a]concat=n=2:v=1:a=1[v2][a2]"
     )
     assert (v, a) == ("v2", "a2")
 
@@ -74,20 +75,20 @@ def test_crossfade_offset_is_the_running_timeline_minus_the_overlap() -> None:
     clips = [_clip(), _clip(Transition(type="crossfade", duration=0.5))]
     filter_complex, v, a = build_transition_filter_complex([2.0, 3.0], clips)
     assert filter_complex == (
-        "[0:v][1:v]xfade=transition=dissolve:duration=0.500:offset=1.500,format=yuv420p[v1];"
+        "[0:v]settb=AVTB[sv0];[1:v]settb=AVTB[sv1];"
+        "[sv0][sv1]xfade=transition=fade:duration=0.500:offset=1.500,format=yuv420p[v1];"
         "[0:a][1:a]acrossfade=d=0.500[a1]"
     )
     assert (v, a) == ("v1", "a1")
 
 
-def test_crossfade_rotates_through_a_few_tasteful_transitions_by_clip_index() -> None:
-    # rotation is keyed by each clip's raw index (i=1 -> "dissolve", matching the other single-transition
-    # tests above), not by a separate "how many transitions so far" counter - it wraps back to "fade" once
-    # the index passes the rotation length.
+def test_crossfade_is_always_a_plain_cross_dissolve_never_a_flashy_template_effect() -> None:
+    """Professional cuts are hard cuts or clean dissolves; circleopen/zoomin/slides look like template
+    editing, so every crossfade position must use xfade's plain `fade`."""
     clips = [_clip(), *(_clip(Transition(type="crossfade", duration=0.2)) for _ in range(6))]
     filter_complex, _, _ = build_transition_filter_complex([1.0] * 7, clips)
     names = re.findall(r"transition=(\w+):", filter_complex)
-    assert names == ["dissolve", "smoothleft", "smoothright", "circleopen", "zoomin", "fade"]
+    assert names == ["fade"] * 6
 
 
 def test_fade_black_maps_to_the_fadeblack_xfade_transition() -> None:
@@ -105,7 +106,8 @@ def test_crossfade_duration_is_clamped_to_the_shorter_neighboring_clip() -> None
 def test_a_zero_duration_transition_request_is_treated_as_a_cut() -> None:
     clips = [_clip(), _clip(Transition(type="crossfade", duration=0.0))]
     filter_complex, _, _ = build_transition_filter_complex([1.0, 1.0], clips)
-    assert filter_complex == "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v1][a1]"
+    assert filter_complex.endswith("[sv0][0:a][sv1][1:a]concat=n=2:v=1:a=1[v1][a1]")
+    assert "xfade" not in filter_complex
 
 
 def test_mixed_cut_and_crossfade_advance_the_timeline_correctly() -> None:
@@ -114,7 +116,7 @@ def test_mixed_cut_and_crossfade_advance_the_timeline_correctly() -> None:
     clips = [_clip(), _clip(), _clip(Transition(type="crossfade", duration=0.5))]
     filter_complex, v, a = build_transition_filter_complex([2.0, 3.0, 1.0], clips)
     assert "concat=n=2:v=1:a=1[v1][a1]" in filter_complex
-    assert "[v1][2:v]xfade=transition=smoothleft:duration=0.500:offset=4.500" in filter_complex
+    assert "[v1][sv2]xfade=transition=fade:duration=0.500:offset=4.500" in filter_complex
     assert (v, a) == ("v2", "a2")
 
 
@@ -133,6 +135,53 @@ async def test_concat_with_a_real_crossfade_shortens_the_joined_duration(
     clips = [_clip(), _clip(Transition(type="crossfade", duration=0.5))]
     await concat_clips([a, b], out_path=out, workdir=tmp_path, clips=clips)
     assert await media_duration(out) == pytest.approx(3.5, abs=0.2)  # 2 + 2 - 0.5, not 4
+
+
+async def test_a_hard_cut_followed_by_a_crossfade_really_renders(
+    clip_two_scenes: Path, tmp_path: Path
+) -> None:
+    """Regression: `concat` outputs timebase 1/1000000, mp4 inputs are 1/15360, and xfade refuses mismatched
+    timebases - a cut followed by a crossfade in one graph crashed ffmpeg. Only string-level tests existed."""
+    paths = []
+    for i in range(3):
+        path = tmp_path / f"m{i}.mp4"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", str(clip_two_scenes), "-t", "1.5", "-c", "copy", str(path)],
+            check=True,
+        )
+        paths.append(path)
+    clips = [_clip(), _clip(), _clip(Transition(type="crossfade", duration=0.3))]
+    out = tmp_path / "joined.mp4"
+    await concat_clips(paths, out_path=out, workdir=tmp_path, clips=clips)
+    assert await media_duration(out) == pytest.approx(4.5 - 0.3, abs=0.2)
+
+
+async def test_many_clips_join_in_bounded_groups_with_the_same_timeline_as_one_flat_chain(
+    clip_two_scenes: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ffmpeg opens every input of a filter graph at once (15 clips peaked ~3.6 GB), so long plans join in
+    groups. With MAX_XFADE_INPUTS forced to 3, 8 clips need 2 levels; the result must still equal the flat
+    math (sum of durations minus every transition overlap, mixing crossfades, cuts and a fade_black), and no
+    intermediate join file may be left behind."""
+    from app.services.render import concat_stage
+
+    monkeypatch.setattr(concat_stage, "MAX_XFADE_INPUTS", 3)
+    paths = []
+    for i in range(8):
+        path = tmp_path / f"c{i}.mp4"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-ss", "0", "-i", str(clip_two_scenes), "-t", "1", "-c", "copy",
+             str(path)],
+            check=True,
+        )  # fmt: skip
+        paths.append(path)
+    x, fb = Transition(type="crossfade", duration=0.2), Transition(type="fade_black", duration=0.3)
+    clips = [_clip(), _clip(x), _clip(x), _clip(), _clip(x), _clip(fb), _clip(x), _clip(x)]
+    out = tmp_path / "joined.mp4"
+    await concat_clips(paths, out_path=out, workdir=tmp_path, clips=clips)
+    overlaps = 0.2 * 5 + 0.3  # five crossfades + one fade_black; the single hard cut removes nothing
+    assert await media_duration(out) == pytest.approx(8.0 - overlaps, abs=0.3)
+    assert not list(tmp_path.glob("join_*.mp4"))
 
 
 # ---------- music catalog ----------

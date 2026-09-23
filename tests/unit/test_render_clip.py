@@ -13,6 +13,7 @@ from app.services.render.clip_stage import (
     color_polish,
     fill_chain,
     fit_blur_graph,
+    hdr_to_sdr,
     render_clip,
     stabilize,
 )
@@ -275,6 +276,62 @@ def test_color_polish_has_no_brightness_or_chroma_sharpening() -> None:
     assert "contrast=" in polish and "saturation=" in polish
     assert "brightness=" not in polish
     assert "ca=0.0" in polish  # chroma sharpen amount is zero
+
+
+def _tonemapped_luma(trc: str, signal: float) -> float:
+    """SDR luma (0-255) after `hdr_to_sdr()` for a flat HDR patch at the given 0..1 signal level."""
+    y10 = int(64 + signal * 876)
+    tags = f"colorspace=bt2020nc:color_primaries=bt2020:color_trc={trc}:range=tv"
+    x264 = f"colorprim=bt2020:transfer={trc}:colormatrix=bt2020nc"
+    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.2:r=10"]
+    src = subprocess.run(  # encode the HDR patch, then decode it through the production chain
+        [*cmd, "-vf", f"format=yuv420p10le,geq=lum={y10}:cb=512:cr=512,setparams={tags}",
+         "-c:v", "libx264", "-crf", "8", "-profile:v", "high10", "-pix_fmt", "yuv420p10le",
+         "-x264-params", x264, "-f", "matroska", "-"],
+        check=True, capture_output=True,
+    ).stdout  # fmt: skip
+    stats = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", "-", "-frames:v", "1", "-vf",
+         f"{hdr_to_sdr()},signalstats,metadata=print:file=-", "-f", "null", "-"],
+        input=src, check=True, capture_output=True,
+    ).stdout.decode()  # fmt: skip
+    return float(re.search(r"YAVG=([\d.]+)", stats).group(1))
+
+
+@pytest.mark.parametrize(
+    ("trc", "signal", "low", "high"),
+    [
+        ("arib-std-b67", 0.50, 130, 160),  # HLG mid signal: BT.2408 target ~145
+        ("arib-std-b67", 0.75, 195, 235),  # HLG diffuse white must land near SDR white (old chain: 182)
+        ("smpte2084", 0.5807, 190, 235),  # PQ 203 nit diffuse white (old chain: 181)
+        ("smpte2084", 0.9026, 200, 240),  # 4000 nit highlight: rolled off, legal range (old chain: 254)
+    ],
+)
+def test_hdr_tone_map_keeps_diffuse_white_bright_and_highlights_legal(
+    trc: str, signal: float, low: int, high: int
+) -> None:
+    assert low <= _tonemapped_luma(trc, signal) <= high
+
+
+async def test_deshake_is_opt_in_not_applied_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """deshake was ~57% of clip render time and can fight deliberate pans: it only runs when asked."""
+    from app.services.render import clip_stage
+
+    seen: list[list[str]] = []
+
+    async def fake_run(args: list[str], **_kw: object) -> None:
+        seen.append(args)
+
+    monkeypatch.setattr(clip_stage, "run_ffmpeg", fake_run)
+    kw = {"target_w": 360, "target_h": 640, "fps": 30, "has_audio": True, "audio_duration_sec": 9.0}
+    clip = Clip(id="c", src_in=0, src_out=2)
+    await render_clip(Path("in.mp4"), clip, out_path=tmp_path / "a.mp4", **kw)
+    await render_clip(Path("in.mp4"), clip, out_path=tmp_path / "b.mp4", shake_fix=True, **kw)
+    default_vf, opted_in_vf = (a[a.index("-vf") + 1] for a in seen)
+    assert "deshake" not in default_vf
+    assert opted_in_vf.startswith("deshake,")
 
 
 def test_stabilize_is_deshake() -> None:

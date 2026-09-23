@@ -124,6 +124,33 @@ def test_parse_flags_hdr_transfer_characteristics(transfer: str | None, hdr: boo
     assert parse_probe_output(_video(**fields)).is_hdr is hdr
 
 
+@pytest.mark.parametrize(
+    ("sar", "width", "value"),
+    [
+        ("4:3", 960, 4 / 3),  # 720x540 stored, displays 16:9
+        ("32:27", 853, 32 / 27),  # DV 720x480 -> 853 wide (720 * 32/27, rounded)
+        ("1:1", 720, 1.0),
+        ("0:1", 720, 1.0),  # ffprobe's "unknown"
+        ("N/A", 720, 1.0),
+        ("garbage", 720, 1.0),
+        ("50:1", 720, 1.0),  # absurd values are ignored, not trusted
+    ],
+)
+def test_parse_applies_sample_aspect_ratio_to_display_width(sar: str, width: int, value: float) -> None:
+    payload = _payload(
+        streams=[
+            {
+                "codec_type": "video",
+                "width": 720,
+                "height": 540 if sar == "4:3" else 480,
+                "sample_aspect_ratio": sar,
+            }
+        ]  # fmt: skip
+    )
+    result = parse_probe_output(payload)
+    assert result.width == width and result.sar == pytest.approx(value)
+
+
 async def test_probe_real_rotated_file_reports_display_size(tmp_path: Path) -> None:
     stored, rotated = tmp_path / "stored.mp4", tmp_path / "rotated.mp4"
     _ffmpeg(

@@ -63,12 +63,29 @@ def fill_chain(target_w: int, target_h: int, reframe: Reframe, *, duration: floa
 
 def hdr_to_sdr() -> str:
     """Tone-map PQ/HLG (iPhone / recent Android HDR) to SDR BT.709. Without this the 10-bit HDR code values
-    are squeezed into an SDR file untouched and the picture looks flat and washed out. Linear-light
-    tone-mapping (hable) keeps highlights instead of clipping them."""
+    are squeezed into an SDR file untouched and the picture looks flat and washed out.
+
+    Calibrated on real signal levels, not guessed: `npl=203` anchors HDR diffuse white (BT.2408: 203 nits,
+    HLG 75%) to SDR white, and `mobius` rolls highlights off smoothly. The widely copied `npl=100` + `hable`
+    recipe rendered diffuse white at luma 182/235 (HLG) and 181 (PQ) - a visibly dark picture - and pushed
+    bright PQ highlights out of legal range (254)."""
     return (
-        "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
+        "zscale=t=linear:npl=203,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=mobius:desat=0,"
         "zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
     )
+
+
+def square_pixels(sar: float) -> str:
+    """Stored pixels -> display shape for non-square-pixel sources (SD/DV/HDV/anamorphic). Every later
+    scale/crop works on stored pixels and ignores SAR, so without this the picture comes out squeezed."""
+    return f"scale='trunc(iw*{sar:.6f}/2)*2':ih:flags=lanczos,setsar=1"
+
+
+def source_prefix(hdr: bool, sar: float) -> str:
+    """Filters that normalise the decoded source (HDR -> SDR, non-square pixels -> square) BEFORE any
+    reframing; empty (and so a no-op for the graph) for ordinary SDR square-pixel footage."""
+    parts = ([hdr_to_sdr()] if hdr else []) + ([square_pixels(sar)] if sar != 1.0 else [])
+    return "".join(f"{p}," for p in parts)
 
 
 def fit_blur_graph(
@@ -79,6 +96,7 @@ def fit_blur_graph(
     *,
     inscribed_square: bool = False,
     hdr: bool = False,
+    sar: float = 1.0,
 ) -> str:
     """Whole frame visible over a blurred, cropped copy of itself. `W`,`H`,`w`,`h` are ffmpeg variables.
 
@@ -87,7 +105,7 @@ def fit_blur_graph(
     circle contains only real picture, so it is cropped out FIRST and then treated like any square clip
     (full-width foreground over a darkened blur of itself) - it reads as ordinary footage, not a widget."""
     w, h = target_w, target_h
-    lead = f"{hdr_to_sdr()}," if hdr else ""
+    lead = source_prefix(hdr, sar)
     if inscribed_square:
         side = f"'trunc(min(iw,ih)*{ROUND_NOTE_INSCRIBED_FRACTION}/2)*2'"
         crop = f"crop=w={side}:h={side}:x='(iw-ow)/2':y='(ih-oh)/2'"
@@ -151,6 +169,8 @@ async def render_clip(
     audio_source: Path | None = None,
     round_note: bool = False,
     hdr: bool = False,
+    sar: float = 1.0,
+    shake_fix: bool = False,
     preset: str = "veryfast",
     crf: int = 21,
     audio_bitrate_k: int = 160,
@@ -200,13 +220,15 @@ async def render_clip(
         audio_map = "0:a:0"
 
     if clip.reframe.mode == "fit_blur" or round_note:  # `fill`'s crop would show the circle's corners
-        graph = fit_blur_graph(target_w, target_h, clip.speed, fps, inscribed_square=round_note, hdr=hdr)
+        graph = fit_blur_graph(
+            target_w, target_h, clip.speed, fps, inscribed_square=round_note, hdr=hdr, sar=sar
+        )
         args += ["-filter_complex", graph, "-map", "[v]"]
     else:
         chain = fill_chain(target_w, target_h, clip.reframe, duration=src_dur)
         args += [
             "-vf",
-            f"{hdr_to_sdr() + ',' if hdr else ''}{stabilize()},{color_polish()},{chain},"
+            f"{source_prefix(hdr, sar)}{stabilize() + ',' if shake_fix else ''}{color_polish()},{chain},"
             f"setpts=PTS/{clip.speed:g},fps={fps},format=yuv420p",
             "-map", "0:v:0",
         ]  # fmt: skip

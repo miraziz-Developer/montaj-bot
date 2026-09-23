@@ -26,6 +26,7 @@ class ProbeResult:
     audio_duration_sec: float | None = None  # None: no audio stream, or its duration was unreadable
     # width/height above are DISPLAY size: phones store landscape pixels plus a rotation flag, and ffmpeg
     # auto-rotates on decode, so a portrait phone video is 1080x1920 here even though it is stored 1920x1080.
+    sar: float = 1.0  # sample (pixel) aspect ratio; width above already includes it (display width)
     rotation: int = 0  # display rotation in degrees (0/90/180/270)
     is_hdr: bool = False  # PQ/HLG transfer: must be tone-mapped to SDR or it renders washed out
 
@@ -71,6 +72,17 @@ def _display_rotation(video: dict[str, Any]) -> int:
         return 0
 
 
+def _sample_aspect_ratio(video: dict[str, Any]) -> float:
+    """Non-square pixels (SD/DV/HDV/anamorphic footage): `4:3` means each stored pixel displays 4/3 as wide.
+    Missing, "N/A" and "0:1" all mean square pixels."""
+    num, _, den = str(video.get("sample_aspect_ratio", "")).partition(":")
+    try:
+        value = float(num) / float(den)
+    except (ValueError, ZeroDivisionError):
+        return 1.0
+    return value if 0.2 < value < 5 and abs(value - 1) > 0.005 else 1.0
+
+
 def parse_probe_output(raw_json: str) -> ProbeResult:
     """Turn `ffprobe -print_format json` output into a ProbeResult; raise InvalidMedia if unusable."""
     try:
@@ -89,6 +101,9 @@ def parse_probe_output(raw_json: str) -> ProbeResult:
             raise InvalidMedia()
         duration = float(fmt.get("duration") or video.get("duration") or 0)
         width, height = int(video["width"]), int(video["height"])
+        sar = _sample_aspect_ratio(video)
+        if sar != 1.0:
+            width = int(round(width * sar))
         rotation = _display_rotation(video)
         if rotation in (90, 270):
             width, height = height, width
@@ -114,6 +129,7 @@ def parse_probe_output(raw_json: str) -> ProbeResult:
         size_bytes=size,
         format_name=fmt.get("format_name"),
         audio_duration_sec=audio_duration,
+        sar=sar,
         rotation=rotation,
         is_hdr=video.get("color_transfer") in _HDR_TRANSFERS,
     )

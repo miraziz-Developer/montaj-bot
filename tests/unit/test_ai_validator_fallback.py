@@ -21,6 +21,42 @@ def _with_broll_clip(plan, **overrides):  # noqa: ANN001, ANN202
     return plan.model_copy(update={"clips": [*plan.clips, broll]})
 
 
+# ---------- force_job_settings: overlays vs captions ----------
+
+
+def _forced(overlay_position: str, captions_position: str, *, has_words: bool = True):  # noqa: ANN202
+    from app.schemas.edit_plan import Captions
+
+    plan = make_plan(
+        [(0, 5)],
+        captions=Captions(position=captions_position),  # type: ignore[arg-type]
+        overlays=[TextOverlay(text="Narxi", start=0.5, end=2.0, position=overlay_position)],  # type: ignore[arg-type]
+    )
+    return force_job_settings(
+        plan, aspect="9:16", style_preset="dynamic_reels", is_trial=False, has_words=has_words
+    ).overlays[0].position  # fmt: skip
+
+
+def test_bottom_overlay_moves_away_from_lower_third_or_bottom_captions() -> None:
+    assert _forced("bottom", "lower_third") == "top"
+    assert _forced("bottom", "bottom") == "top"
+
+
+def test_overlay_in_a_free_zone_is_left_alone() -> None:
+    assert _forced("top", "lower_third") == "top"
+    assert _forced("middle", "lower_third") == "middle"
+    assert _forced("top", "bottom") == "top"
+
+
+def test_overlay_swaps_to_the_bottom_when_captions_sit_on_top_or_middle() -> None:
+    assert _forced("top", "top") == "bottom"
+    assert _forced("middle", "middle") == "top"
+
+
+def test_overlay_stays_put_when_there_are_no_captions() -> None:
+    assert _forced("bottom", "lower_third", has_words=False) == "bottom"
+
+
 # ---------- validate_plan ----------
 
 

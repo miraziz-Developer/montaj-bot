@@ -213,6 +213,37 @@ def test_crossfade_applied_between_clips_but_never_before_the_first() -> None:
     assert transitions == [("cut", 0.0), ("crossfade", 0.12), ("crossfade", 0.12)]
 
 
+def test_a_rhythm_split_inside_one_continuous_take_stays_a_hard_cut() -> None:
+    """Regression (seen on a real render): c2=0.6-3.0 then c3=3.0-5.7 are one continuous take; a dissolve
+    there eats content and stutters. Only real editorial cuts get the crossfade."""
+    plan = apply_rhythm(make_plan([(0.0, 12.0), (20.0, 22.0)]), EMPTY, get_preset("dynamic_reels"))
+    spans = [(c.src_in, c.src_out, c.transition_in.type) for c in plan.clips]
+    assert len(spans) >= 3
+    for prev, nxt in zip(plan.clips, plan.clips[1:], strict=False):
+        expected = "cut" if nxt.src_in == prev.src_out else "crossfade"
+        assert nxt.transition_in.type == expected, spans
+    assert plan.clips[-1].transition_in.type == "crossfade"  # 12.0 -> 20.0 is a real jump
+
+
+def test_dubbed_broll_boundaries_keep_the_narration_uncrossfaded() -> None:
+    from app.schemas.edit_plan import ClipAudio
+
+    base = make_plan([(0.0, 3.0), (5.0, 8.0)])
+    broll = base.clips[0].model_copy(
+        update={
+            "id": "b",
+            "source_id": "broll_1",
+            "src_in": 0.0,
+            "src_out": 2.0,
+            "audio": ClipAudio(source="primary", primary_src_in=3.0, primary_src_out=5.0),
+        }
+    )
+    plan = base.model_copy(update={"clips": [base.clips[0], broll, base.clips[1]]})
+    result = apply_rhythm(plan, EMPTY, get_preset("dynamic_reels"))
+    # primary 0-3 -> broll (voice continues 3-5) -> primary 5-8: both joins are voice-continuous
+    assert [c.transition_in.type for c in result.clips] == ["cut", "cut", "cut"]
+
+
 def test_ad_commercial_and_vlog_get_their_own_crossfade_length() -> None:
     ad = apply_rhythm(make_plan([(0, 4), (5, 9)]), EMPTY, get_preset("ad_commercial"))
     vlog = apply_rhythm(make_plan([(0, 4), (5, 9)]), EMPTY, get_preset("vlog_story"))

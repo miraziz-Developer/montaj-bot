@@ -9,7 +9,7 @@ from collections.abc import Collection, Sequence
 
 from pydantic import ValidationError
 
-from app.schemas.edit_plan import Clip, ClipAudio, EditPlan, Transition, Watermark
+from app.schemas.edit_plan import Captions, Clip, ClipAudio, EditPlan, TextOverlay, Transition, Watermark
 from app.services.ai.presets import PresetRules
 from app.services.media.probe import looks_like_round_video_note
 from app.services.stt.base import Transcript
@@ -50,8 +50,20 @@ def force_job_settings(
             "style_preset": style_preset,
             "watermark": watermark,
             "captions": captions,
+            "overlays": [_dodge_captions(o, captions) for o in plan.overlays],
         }
     )
+
+
+def _dodge_captions(overlay: TextOverlay, captions: Captions) -> TextOverlay:
+    """Two texts fighting for the same screen zone look cluttered (seen on a real render: a CTA stacked on
+    the subtitles). When captions are on, an overlay in the captions' zone moves to the opposite side."""
+    if not captions.enabled:
+        return overlay
+    captions_zone = "bottom" if captions.position in ("lower_third", "bottom") else captions.position
+    if overlay.position != captions_zone:
+        return overlay
+    return overlay.model_copy(update={"position": "top" if captions_zone != "top" else "bottom"})
 
 
 # ---------- rhythm ----------
@@ -109,6 +121,29 @@ def _piece_role(original: str, index: int, count: int) -> str:
     return original
 
 
+CONTINUITY_TOLERANCE_SEC = 0.05
+
+
+def _is_continuous(prev: Clip, nxt: Clip) -> bool:
+    """`nxt` continues `prev` without an editorial jump: same file/speed picking up where it stopped, or a
+    B-roll cutaway whose dubbed primary narration continues (or resumes) exactly at the boundary - the
+    picture changes but the voice must not be crossfaded (that would swallow words)."""
+    tol = CONTINUITY_TOLERANCE_SEC
+    if prev.source_id == nxt.source_id and prev.speed == nxt.speed and abs(nxt.src_in - prev.src_out) <= tol:
+        return True
+    into_dub = (
+        nxt.audio.source == "primary"
+        and prev.source_id == "primary"
+        and abs((nxt.audio.primary_src_in or 0.0) - prev.src_out) <= tol
+    )
+    out_of_dub = (
+        prev.audio.source == "primary"
+        and nxt.source_id == "primary"
+        and abs(nxt.src_in - (prev.audio.primary_src_out or 0.0)) <= tol
+    )
+    return into_dub or out_of_dub
+
+
 def apply_rhythm(
     plan: EditPlan,
     transcript: Transcript,
@@ -150,11 +185,13 @@ def apply_rhythm(
             reframe = clip.reframe.model_copy(update={"zoom": levels[i % len(levels)]})
             clips[i] = clip.model_copy(update={"reframe": reframe})
     if preset.crossfade_sec > 0:
-        # Every cut gets the same short crossfade (a per-style constant, not an AI choice - like zoom_levels
-        # above); clip 0 keeps its default transition_in since nothing precedes it.
+        # Every REAL editorial cut gets the same short crossfade (a per-style constant, not an AI choice -
+        # like zoom_levels above); clip 0 keeps its default transition_in since nothing precedes it. A
+        # rhythm split inside one continuous take (next clip starts exactly where the previous ended) is not
+        # an editorial cut: a dissolve there eats content and stutters, so it stays a plain cut.
         transition = Transition(type="crossfade", duration=preset.crossfade_sec)
         for i, clip in enumerate(clips):
-            if i > 0:
+            if i > 0 and not _is_continuous(clips[i - 1], clip):
                 clips[i] = clip.model_copy(update={"transition_in": transition})
     return renumber(plan.model_copy(update={"clips": clips}))
 

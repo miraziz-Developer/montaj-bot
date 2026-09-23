@@ -175,6 +175,27 @@ async def test_portrait_phone_video_stored_landscape_keeps_a_portrait_original_a
     assert (info.width, info.height) == (360, 640)
 
 
+async def test_anamorphic_source_is_sized_and_unsqueezed_by_its_pixel_aspect_ratio(
+    tmp_path: Path, assets: Path
+) -> None:
+    """720x540 stored with SAR 4:3 DISPLAYS as 16:9 (960x540). "original" must come out 16:9, not 4:3."""
+    src = tmp_path / "anamorphic.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=960x540:rate=30:duration=2",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-vf", "scale=720:540,setsar=4/3",
+         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", str(src)],
+        check=True,
+    )  # fmt: skip
+    assert (await probe(str(src))).width == 960
+    out = tmp_path / "final.mp4"
+    await render_plan(
+        source=src, plan=make_plan([(0.0, 1.5)], aspect="original", captions=Captions(enabled=False)),
+        transcript=TRANSCRIPT, workdir=tmp_path / "w", out_path=out, assets_dir=assets, max_short_side=360,
+    )  # fmt: skip
+    info = await probe(str(out))
+    assert (info.width, info.height) == (640, 360)
+
+
 async def test_hdr_source_is_tone_mapped_to_bt709_sdr(tmp_path: Path, assets: Path) -> None:
     hdr = tmp_path / "hdr.mp4"
     subprocess.run(

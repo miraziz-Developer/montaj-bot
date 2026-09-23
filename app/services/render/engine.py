@@ -78,6 +78,7 @@ async def render_plan(
     clips_dir.mkdir(exist_ok=True)
     joined = workdir / "joined.mp4"
     concurrency = clip_concurrency or get_settings().render_clip_concurrency
+    shake_fix = get_settings().render_stabilize
 
     infos = {source_id: await probe(str(path)) for source_id, path in sources.items()}
     info = infos["primary"]
@@ -97,14 +98,16 @@ async def render_plan(
                 has_audio=clip_info.has_audio, audio_duration_sec=clip_info.audio_duration_sec,
                 audio_source=sources["primary"] if clip.audio.source == "primary" else None,
                 round_note=looks_like_round_video_note(clip_info.width, clip_info.height),
-                hdr=clip_info.is_hdr,
+                hdr=clip_info.is_hdr, sar=clip_info.sar, shake_fix=shake_fix,
                 preset=plan.export.preset, crf=plan.export.crf,
                 audio_bitrate_k=plan.export.audio_bitrate_k,
             )  # fmt: skip
 
     try:
         await asyncio.gather(*(cut(c, p) for c, p in zip(plan.clips, clip_paths, strict=True)))
+        clips_done = time.monotonic()
         await concat_clips(clip_paths, out_path=joined, workdir=workdir, clips=plan.clips)
+        joined_done = time.monotonic()
 
         timeline = build_timeline(plan.clips)
         ass_path: Path | None = None
@@ -122,6 +125,10 @@ async def render_plan(
         await render_final(
             joined=joined, ass_path=ass_path, music_path=music_path, plan=plan,
             target_w=width, target_h=height, out_path=out_path, fonts_dir=fonts_dir,
+        )  # fmt: skip
+        logger.info(
+            "render stages clips=%.1fs join=%.1fs final=%.1fs (%d clips)",
+            clips_done - started, joined_done - clips_done, time.monotonic() - joined_done, len(plan.clips),
         )  # fmt: skip
     finally:
         shutil.rmtree(clips_dir, ignore_errors=True)
