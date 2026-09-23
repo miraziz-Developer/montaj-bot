@@ -57,7 +57,8 @@ def _finalize(
     plan = apply_rhythm(
         plan, ctx.transcript, preset, source_width=ctx.source.width, source_height=ctx.source.height
     )
-    plan, errors = validate_plan(plan, ctx.source.duration_sec, preset, ctx.music_ids)
+    broll_durations = {b.source_id: b.duration_sec for b in ctx.broll_sources}
+    plan, errors = validate_plan(plan, ctx.source.duration_sec, preset, ctx.music_ids, broll_durations)
     return force(plan), errors
 
 

@@ -9,7 +9,7 @@ from collections.abc import Collection, Sequence
 
 from pydantic import ValidationError
 
-from app.schemas.edit_plan import Clip, EditPlan, Transition, Watermark
+from app.schemas.edit_plan import Clip, ClipAudio, EditPlan, Transition, Watermark
 from app.services.ai.presets import PresetRules
 from app.services.stt.base import Transcript
 
@@ -134,7 +134,13 @@ def apply_rhythm(
     """Split clips longer than `max_shot_sec`, alternate zoom levels, renumber ids."""
     clips: list[Clip] = []
     for clip in plan.clips:
-        ranges = _split_clip(clip, transcript, preset.max_shot_sec)
+        # B-roll src_in/src_out index into their OWN file, not the primary transcript's timeline - the
+        # pause-based split logic below only makes sense for the primary source.
+        ranges = (
+            _split_clip(clip, transcript, preset.max_shot_sec)
+            if clip.source_id == "primary"
+            else [(clip.src_in, clip.src_out)]
+        )
         for i, (start, end) in enumerate(ranges):
             clips.append(
                 clip.model_copy(
@@ -174,38 +180,67 @@ def _total(clips: Sequence[Clip]) -> float:
     return sum(c.out_duration for c in clips)
 
 
+def _fix_or_drop_primary_dub(clip: Clip, primary_duration: float) -> Clip:
+    """A B-roll clip's audio.source=="primary" window must lie inside the primary source's own duration;
+    an AI mistake here falls back to muting that clip rather than failing the whole plan."""
+    audio = clip.audio
+    if audio.source != "primary":
+        return clip
+    lo = max(0.0, audio.primary_src_in or 0.0)
+    hi = min(primary_duration, audio.primary_src_out or 0.0)
+    if hi - lo < MIN_CLIP_SEC:
+        return clip.model_copy(update={"audio": ClipAudio(volume=audio.volume, mute=True)})
+    if (lo, hi) != (audio.primary_src_in, audio.primary_src_out):
+        audio = audio.model_copy(update={"primary_src_in": lo, "primary_src_out": hi})
+        clip = clip.model_copy(update={"audio": audio})
+    return clip
+
+
 def validate_plan(
-    plan: EditPlan, source_duration: float, preset: PresetRules, music_ids: Collection[str]
+    plan: EditPlan,
+    source_duration: float,
+    preset: PresetRules,
+    music_ids: Collection[str],
+    broll_durations: dict[str, float] | None = None,
 ) -> tuple[EditPlan, list[str]]:
-    """Auto-fix soft issues; return (plan, hard_errors). A non-empty error list means: use the fallback."""
+    """Auto-fix soft issues; return (plan, hard_errors). A non-empty error list means: use the fallback.
+    `broll_durations` maps a B-roll `Clip.source_id` to that source's own duration (P13); a clip whose
+    source_id isn't "primary" and isn't in this map is rejected (the AI referenced an unknown source)."""
     errors: list[str] = []
+    broll_durations = broll_durations or {}
 
     clips: list[Clip] = []
     for clip in plan.clips:
-        if clip.src_in >= source_duration or clip.src_out <= 0:
-            errors.append(f"clip {clip.id} lies entirely outside the source (0..{source_duration:.2f}s)")
+        limit = source_duration if clip.source_id == "primary" else broll_durations.get(clip.source_id)
+        if limit is None:
+            errors.append(f"clip {clip.id} references unknown source_id {clip.source_id!r}")
             continue
-        start, end = max(0.0, clip.src_in), min(source_duration, clip.src_out)
+        if clip.src_in >= limit or clip.src_out <= 0:
+            errors.append(f"clip {clip.id} lies entirely outside its source (0..{limit:.2f}s)")
+            continue
+        start, end = max(0.0, clip.src_in), min(limit, clip.src_out)
         if end - start < MIN_CLIP_SEC:
             continue  # sliver left after clamping: drop
         if (start, end) != (clip.src_in, clip.src_out):
             clip = clip.model_copy(update={"src_in": start, "src_out": end})
-        clips.append(clip)
+        clips.append(_fix_or_drop_primary_dub(clip, source_duration))
 
-    if preset.keep_chronology:
-        clips.sort(key=lambda c: c.src_in)
+    if preset.keep_chronology and all(c.source_id == "primary" for c in clips):
+        clips.sort(key=lambda c: c.src_in)  # mixed sources have no single shared timeline to sort by
 
     if not clips:
         errors.append("plan has no usable clips")
-    by_start = sorted(clips, key=lambda c: c.src_in)
-    for a, b in zip(by_start, by_start[1:], strict=False):
-        overlap = a.src_out - b.src_in
-        if overlap > OVERLAP_TOLERANCE_SEC:
-            errors.append(f"clips {a.id} and {b.id} overlap in the source by {overlap:.2f}s")
+    for source_id in {c.source_id for c in clips}:
+        same_source = sorted((c for c in clips if c.source_id == source_id), key=lambda c: c.src_in)
+        for a, b in zip(same_source, same_source[1:], strict=False):
+            overlap = a.src_out - b.src_in
+            if overlap > OVERLAP_TOLERANCE_SEC:
+                errors.append(f"clips {a.id} and {b.id} overlap in source {source_id!r} by {overlap:.2f}s")
 
     total = _total(clips)
-    if total > source_duration * DURATION_SLACK:
-        errors.append(f"plan is longer ({total:.1f}s) than the source ({source_duration:.1f}s)")
+    all_footage = source_duration + sum(broll_durations.values())
+    if total > all_footage * DURATION_SLACK:
+        errors.append(f"plan is longer ({total:.1f}s) than the available footage ({all_footage:.1f}s)")
 
     music = plan.music
     if music.enabled and (music.track_id is None or music.track_id not in music_ids):

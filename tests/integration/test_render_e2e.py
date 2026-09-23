@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.core.errors import RenderError
-from app.schemas.edit_plan import Captions, Music, TextOverlay
+from app.schemas.edit_plan import Captions, ClipAudio, Music, TextOverlay
 from app.services.media.probe import probe
 from app.services.render import engine
 from app.services.render.engine import render_plan
@@ -121,6 +121,38 @@ async def test_disabled_music_track_missing_from_catalog_is_ignored(
         max_short_side=360,
     )
     assert (await probe(str(out))).has_audio
+
+
+async def test_multi_source_broll_clip_renders_with_dubbed_primary_audio(
+    clip_two_scenes: Path, clip_no_audio: Path, tmp_path: Path, assets: Path
+) -> None:
+    """P13 end-to-end: `sources` resolves each clip's own `source_id`, and a B-roll clip's silent-on-its-
+    own-file video gets the primary's audio dubbed in underneath (real ffmpeg, both stages together)."""
+    plan = make_plan([(0.0, 1.0)], captions=Captions(enabled=False))
+    broll = plan.clips[0].model_copy(
+        update={
+            "id": "c2",
+            "source_id": "broll_1",
+            "src_in": 0.0,
+            "src_out": 1.0,
+            "role": "broll",
+            "audio": ClipAudio(source="primary", primary_src_in=1.0, primary_src_out=2.0),
+        }
+    )
+    plan = plan.model_copy(update={"clips": [plan.clips[0], broll]})
+    out, workdir = tmp_path / "final.mp4", tmp_path / "w"
+    stats = await render_plan(
+        sources={"primary": clip_two_scenes, "broll_1": clip_no_audio},
+        plan=plan,
+        transcript=TRANSCRIPT,
+        workdir=workdir,
+        out_path=out,
+        assets_dir=assets,
+        max_short_side=360,
+    )
+    info = await probe(str(out))
+    assert info.has_audio  # broll_1 (clip_no_audio) has no track of its own - this can only be the dub
+    assert info.duration_sec == pytest.approx(2.0, abs=0.3) == stats.duration_sec
 
 
 async def test_source_without_audio(clip_no_audio: Path, tmp_path: Path, assets: Path) -> None:

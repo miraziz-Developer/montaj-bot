@@ -55,7 +55,8 @@ def output_resolution(
 
 async def render_plan(
     *,
-    source: Path,
+    source: Path | None = None,
+    sources: dict[str, Path] | None = None,
     plan: EditPlan,
     transcript: Transcript,
     workdir: Path,
@@ -64,7 +65,13 @@ async def render_plan(
     max_short_side: int = 1080,
     clip_concurrency: int | None = None,
 ) -> RenderStats:
-    """Render `plan` to `out_path`. Per-clip temp files are always removed; `workdir` is the caller's."""
+    """Render `plan` to `out_path`. Per-clip temp files are always removed; `workdir` is the caller's.
+
+    Pass `source` (single-source jobs, unchanged) or `sources` (P13: `{"primary": path, "broll_1": path,
+    ...}`) - exactly one of the two. Every clip's `source_id` looks itself up in `sources`; a clip whose
+    `audio.source == "primary"` additionally pulls its audio track from `sources["primary"]`."""
+    assert (source is None) != (sources is None), "pass exactly one of source/sources"
+    sources = sources or {"primary": source}  # type: ignore[dict-item]
     started = time.monotonic()
     workdir.mkdir(parents=True, exist_ok=True)
     clips_dir = workdir / "clips"
@@ -72,7 +79,7 @@ async def render_plan(
     joined = workdir / "joined.mp4"
     concurrency = clip_concurrency or get_settings().render_clip_concurrency
 
-    info = await probe(str(source))
+    info = await probe(str(sources["primary"]))
     width, height = output_resolution(
         plan.target.aspect, info.width, info.height, max_short_side=max_short_side
     )
@@ -82,9 +89,13 @@ async def render_plan(
 
     async def cut(clip, path: Path) -> None:  # noqa: ANN001
         async with semaphore:
+            clip_source = sources[clip.source_id]
+            is_primary = clip.source_id == "primary"
             await render_clip(
-                source, clip, out_path=path, target_w=width, target_h=height, fps=fps,
-                has_audio=info.has_audio, audio_duration_sec=info.audio_duration_sec,
+                clip_source, clip, out_path=path, target_w=width, target_h=height, fps=fps,
+                has_audio=info.has_audio if is_primary else None,
+                audio_duration_sec=info.audio_duration_sec if is_primary else None,
+                audio_source=sources["primary"] if clip.audio.source == "primary" else None,
                 preset=plan.export.preset, crf=plan.export.crf,
                 audio_bitrate_k=plan.export.audio_bitrate_k,
             )  # fmt: skip

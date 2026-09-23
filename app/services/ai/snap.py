@@ -49,11 +49,17 @@ def _overlap(a: Clip, b: Clip) -> float:
 
 def snap_cuts(plan: EditPlan, transcript: Transcript, silences: Sequence[Silence]) -> EditPlan:
     """A new plan whose src_in/src_out sit on safe cut points. Never yields a clip shorter than 0.3 s and
-    never creates an overlap that was not already there (such clips keep their original range)."""
+    never creates an overlap that was not already there (such clips keep their original range).
+
+    P13: `transcript`/`silences` are timed against the PRIMARY source only, so a non-primary (B-roll)
+    clip's src_in/src_out - which index into a different file entirely - are left untouched here."""
     words = transcript.all_words()
     originals = list(plan.clips)
     snapped: list[Clip] = []
     for clip in originals:
+        if clip.source_id != "primary":
+            snapped.append(clip)
+            continue
         new_in = snap_point(clip.src_in, "in", words, silences)
         new_out = snap_point(clip.src_out, "out", words, silences)
         if new_out - new_in < MIN_CLIP_SEC:
@@ -61,9 +67,14 @@ def snap_cuts(plan: EditPlan, transcript: Transcript, silences: Sequence[Silence
         else:
             snapped.append(clip.model_copy(update={"src_in": new_in, "src_out": new_out}))
 
-    # Snapping moved boundaries of neighbours towards each other: undo any NEW overlap.
-    order = sorted(range(len(snapped)), key=lambda i: snapped[i].src_in)
-    for left, right in zip(order, order[1:], strict=False):
-        if _overlap(snapped[left], snapped[right]) > 0 and _overlap(originals[left], originals[right]) <= 0:
-            snapped[left], snapped[right] = originals[left], originals[right]
+    # Snapping moved boundaries of neighbours towards each other: undo any NEW overlap (only clips sharing
+    # a source_id can meaningfully overlap - each source has its own independent timeline).
+    for source_id in {c.source_id for c in snapped}:
+        idxs = [i for i, c in enumerate(snapped) if c.source_id == source_id]
+        order = sorted(idxs, key=lambda i: snapped[i].src_in)
+        for left, right in zip(order, order[1:], strict=False):
+            new_overlap = _overlap(snapped[left], snapped[right]) > 0
+            old_overlap = _overlap(originals[left], originals[right]) <= 0
+            if new_overlap and old_overlap:
+                snapped[left], snapped[right] = originals[left], originals[right]
     return plan.model_copy(update={"clips": snapped})

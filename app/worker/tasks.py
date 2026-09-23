@@ -32,6 +32,8 @@ from app.services.render.engine import render_plan
 from app.services.render.music import load_music_catalog
 from app.worker.artifacts import (
     artifact_store,
+    broll_sources_for_planning,
+    download_broll,
     load_plan_context,
     load_transcript,
     watermark_text,
@@ -170,6 +172,9 @@ async def run_analysis(ctx: dict[str, Any], job_id: str) -> None:
         if await _transition(deps, jid, [JobStatus.ANALYZING], JobStatus.PLANNING) is None:
             return
         await _safe(deps.notifier.progress(job, texts.PROGRESS_PLANNING))
+        broll_sources = await broll_sources_for_planning(
+            deps, job, workdir, artifact_store(deps, job, workdir)
+        )
         plan_ctx = PlanContext(
             source=SourceInfo(
                 duration_sec=float(upload.duration_sec or 0),
@@ -184,6 +189,7 @@ async def run_analysis(ctx: dict[str, Any], job_id: str) -> None:
             silences=pre.silences,
             music_tracks=load_music_catalog(deps.settings.assets_dir),
             creator_profile={"niche": user.niche or "", "purpose": user.purpose or ""},
+            broll_sources=broll_sources,
         )
         plan, source, plan_usage = await build_initial_plan(
             deps.gemini, job=job, ctx=plan_ctx, watermark_text=watermark_text(deps)
@@ -340,9 +346,10 @@ async def run_render(ctx: dict[str, Any], job_id: str) -> None:
             transcript = await load_transcript(artifact_store(deps, job, workdir))
             source = workdir / f"source{Path(upload.blob_path).suffix}"
             await deps.storage.download_to_file(settings.azure_uploads_container, upload.blob_path, source)
+            broll_paths = await download_broll(deps, jid, workdir)
             final = workdir / "final.mp4"
             stats = await render_plan(
-                source=source,
+                sources={"primary": source, **broll_paths},
                 plan=plan,
                 transcript=transcript,
                 workdir=workdir,

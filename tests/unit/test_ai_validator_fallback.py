@@ -1,4 +1,4 @@
-from app.schemas.edit_plan import Music, TextOverlay
+from app.schemas.edit_plan import ClipAudio, Music, TextOverlay
 from app.services.ai.fallback_planner import SUMMARY_TEMPLATE, build_fallback_plan
 from app.services.ai.plan_validator import force_job_settings, validate_plan
 from app.services.ai.presets import get_preset
@@ -10,8 +10,15 @@ REELS = get_preset("dynamic_reels")
 EMPTY = Transcript(language="uz", segments=[])
 
 
-def _validate(plan, duration=60.0, preset=REELS, music_ids=()):  # noqa: ANN001, ANN202
-    return validate_plan(plan, duration, preset, set(music_ids))
+def _validate(plan, duration=60.0, preset=REELS, music_ids=(), broll_durations=None):  # noqa: ANN001, ANN202
+    return validate_plan(plan, duration, preset, set(music_ids), broll_durations)
+
+
+def _with_broll_clip(plan, **overrides):  # noqa: ANN001, ANN202
+    """Append a second clip (default source_id "broll_1") built from the plan's own first clip."""
+    fields = {"id": "c2", "source_id": "broll_1", **overrides}
+    broll = plan.clips[0].model_copy(update=fields)
+    return plan.model_copy(update={"clips": [*plan.clips, broll]})
 
 
 # ---------- validate_plan ----------
@@ -48,6 +55,78 @@ def test_overlap_is_a_hard_error_for_every_preset() -> None:
 def test_tiny_overlap_within_tolerance_is_fine() -> None:
     _, errors = _validate(make_plan([(0, 10.04), (10, 20)]))
     assert errors == []
+
+
+# ---------- validate_plan: P13 multi-source B-roll ----------
+
+
+def test_broll_clip_is_bounded_by_its_own_source_duration_not_the_primarys() -> None:
+    plan = _with_broll_clip(make_plan([(0, 10)]), src_in=0, src_out=5)
+    fixed, errors = _validate(plan, duration=10.0, broll_durations={"broll_1": 5.0})
+    assert errors == []
+    assert [(c.source_id, c.src_in, c.src_out) for c in fixed.clips] == [
+        ("primary", 0, 10),
+        ("broll_1", 0, 5),
+    ]
+
+
+def test_broll_clip_past_its_own_source_duration_is_clamped() -> None:
+    plan = _with_broll_clip(make_plan([(0, 10)]), src_in=3, src_out=8)
+    fixed, errors = _validate(plan, duration=10.0, broll_durations={"broll_1": 5.0})
+    assert errors == [] and fixed.clips[1].src_out == 5.0
+
+
+def test_broll_clip_referencing_an_unknown_source_id_is_a_hard_error() -> None:
+    plan = _with_broll_clip(make_plan([(0, 10)]), src_in=0, src_out=5)
+    _, errors = _validate(plan, duration=10.0, broll_durations={"broll_2": 5.0})
+    assert errors and "unknown source_id" in errors[0]
+
+
+def test_broll_clip_missing_from_broll_durations_is_rejected_even_without_the_kwarg() -> None:
+    """The default (`broll_durations=None`) must still reject a B-roll clip - not silently accept it as if
+    its bounds were the primary's, which would be wrong and could pass through a corrupt AI plan."""
+    plan = _with_broll_clip(make_plan([(0, 10)]), src_in=0, src_out=5)
+    _, errors = _validate(plan, duration=10.0)
+    assert errors and "unknown source_id" in errors[0]
+
+
+def test_primary_and_broll_clips_with_the_same_numeric_range_do_not_overlap() -> None:
+    """0..10 on the primary and 2..8 on a B-roll file are unrelated ranges in different files."""
+    plan = _with_broll_clip(make_plan([(0, 10)]), src_in=2, src_out=8)
+    _, errors = _validate(plan, duration=10.0, broll_durations={"broll_1": 10.0})
+    assert errors == []
+
+
+def test_broll_clips_from_the_same_source_still_detect_overlap() -> None:
+    plan = _with_broll_clip(make_plan([(0, 10)]), src_in=0, src_out=8)
+    plan = _with_broll_clip(plan, id="c3", src_in=5, src_out=9)
+    _, errors = _validate(plan, duration=10.0, broll_durations={"broll_1": 10.0})
+    assert any("overlap in source 'broll_1'" in e for e in errors)
+
+
+def test_valid_primary_dub_window_is_kept() -> None:
+    audio = ClipAudio(source="primary", primary_src_in=2.0, primary_src_out=5.0)
+    plan = _with_broll_clip(make_plan([(0, 10)]), src_in=0, src_out=3, audio=audio)
+    fixed, errors = _validate(plan, duration=10.0, broll_durations={"broll_1": 10.0})
+    assert errors == []
+    assert (fixed.clips[1].audio.source, fixed.clips[1].audio.primary_src_out) == ("primary", 5.0)
+
+
+def test_primary_dub_window_past_the_primary_duration_is_clamped() -> None:
+    audio = ClipAudio(source="primary", primary_src_in=8.0, primary_src_out=15.0)
+    plan = _with_broll_clip(make_plan([(0, 10)]), src_in=0, src_out=3, audio=audio)
+    fixed, errors = _validate(plan, duration=10.0, broll_durations={"broll_1": 10.0})
+    assert errors == []
+    assert (fixed.clips[1].audio.source, fixed.clips[1].audio.primary_src_out) == ("primary", 10.0)
+
+
+def test_sliver_primary_dub_window_falls_back_to_a_muted_clip() -> None:
+    """A window that clamps down to under 0.3 s is not usable audio: mute rather than fail the plan."""
+    audio = ClipAudio(source="primary", primary_src_in=9.9, primary_src_out=15.0)
+    plan = _with_broll_clip(make_plan([(0, 10)]), src_in=0, src_out=3, audio=audio)
+    fixed, errors = _validate(plan, duration=10.0, broll_durations={"broll_1": 10.0})
+    assert errors == []
+    assert (fixed.clips[1].audio.source, fixed.clips[1].audio.mute) == ("own", True)
 
 
 def test_total_duration_over_105_percent_of_source_is_a_hard_error() -> None:

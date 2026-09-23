@@ -101,10 +101,10 @@ def test_fit_blur_graph_keeps_ffmpeg_variables_literal() -> None:
 
 def test_audio_filter_omits_atempo_at_normal_speed_and_mutes_with_volume_zero() -> None:
     assert audio_filter(Clip(id="c", src_in=0, src_out=2)) == (
-        "volume=1,aresample=48000,aformat=channel_layouts=stereo"
+        "volume=1,aresample=48000,aformat=channel_layouts=stereo,apad"
     )
     fast = Clip(id="c", src_in=0, src_out=2, speed=1.5, audio=ClipAudio(volume=0.8))
-    assert audio_filter(fast) == "atempo=1.5,volume=0.8,aresample=48000,aformat=channel_layouts=stereo"
+    assert audio_filter(fast) == "atempo=1.5,volume=0.8,aresample=48000,aformat=channel_layouts=stereo,apad"
     assert audio_filter(Clip(id="c", src_in=0, src_out=2, audio=ClipAudio(mute=True))).startswith("volume=0,")
 
 
@@ -151,6 +151,30 @@ async def test_mute_keeps_an_audio_track_that_is_silent(clip_two_scenes: Path, t
     assert await _mean_volume(loud) > -40
     assert await _mean_volume(muted) < -60
     assert await media_duration(muted) == pytest.approx(2.0, abs=0.15)
+
+
+async def test_primary_dub_audio_is_pulled_from_audio_source_not_the_clips_own_file(
+    clip_no_audio: Path, clip_two_scenes: Path, tmp_path: Path
+) -> None:
+    """P13 B-roll dub: `source` (the B-roll video) has NO audio track at all here - if `audio_source`
+    weren't actually wired in, this would silently fall back to `anullsrc` (silence) instead of the
+    primary's loud tone."""
+    out = tmp_path / "c.mp4"
+    clip = Clip(
+        id="c1",
+        source_id="broll_1",
+        src_in=0.5,
+        src_out=2.5,
+        role="broll",
+        audio=ClipAudio(source="primary", primary_src_in=0.0, primary_src_out=2.0),
+    )
+    await render_clip(
+        clip_no_audio, clip, out_path=out, target_w=360, target_h=640, fps=30, audio_source=clip_two_scenes
+    )
+    info = await probe(str(out))
+    assert info.has_audio
+    assert await _mean_volume(out) > -40  # clip_two_scenes' tone, not silence
+    assert await media_duration(out) == pytest.approx(2.0, abs=0.15)
 
 
 async def test_clip_past_the_audio_tracks_own_end_still_yields_a_silent_audio_stream(
@@ -209,7 +233,8 @@ async def test_both_reframe_modes_produce_the_requested_size(
 
 
 def test_color_polish_has_no_brightness_or_chroma_sharpening() -> None:
-    """Deliberately conservative: contrast/saturation only, no brightness (clipping risk), luma-only sharpen."""
+    """Deliberately conservative: contrast/saturation only, no brightness (clipping risk), luma-only
+    sharpen."""
     polish = color_polish()
     assert "contrast=" in polish and "saturation=" in polish
     assert "brightness=" not in polish

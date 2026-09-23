@@ -28,6 +28,20 @@ class Reframe(BaseModel):
 class ClipAudio(BaseModel):
     volume: float = Field(1.0, ge=0.0, le=2.0)
     mute: bool = False
+    # P13 B-roll dub: "primary" pulls audio from the job's primary source (at primary_src_in/out) instead
+    # of muting a b-roll clip - the narration keeps playing while the picture cuts to the cutaway footage.
+    source: Literal["own", "primary"] = "own"
+    primary_src_in: float | None = Field(None, ge=0.0)
+    primary_src_out: float | None = Field(None, gt=0.0)
+
+    @model_validator(mode="after")
+    def _primary_window(self) -> ClipAudio:
+        if self.source == "primary":
+            if self.primary_src_in is None or self.primary_src_out is None:
+                raise ValueError("audio.source 'primary' needs primary_src_in and primary_src_out")
+            if self.primary_src_out <= self.primary_src_in:
+                raise ValueError("primary_src_out must be after primary_src_in")
+        return self
 
 
 class Transition(BaseModel):
@@ -37,6 +51,7 @@ class Transition(BaseModel):
 
 class Clip(BaseModel):
     id: str = Field(min_length=1, max_length=16)
+    source_id: str = Field("primary", min_length=1, max_length=16)  # P13: "primary" or a broll_sources id
     src_in: float = Field(ge=0.0)
     src_out: float = Field(gt=0.0)
     speed: float = Field(1.0, ge=0.5, le=2.0)

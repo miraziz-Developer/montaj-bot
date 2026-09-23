@@ -30,6 +30,26 @@ class SourceInfo:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class BrollSourceInfo:
+    """One extra B-roll video (P13): muted cutaway footage, no STT pass - just per-scene visuals."""
+
+    source_id: str
+    duration_sec: float
+    width: int
+    height: int
+    scenes: list[dict[str, Any]] = field(default_factory=list)  # [{"scene_id","start","end","description"}]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source_id": self.source_id,
+            "duration_sec": round(self.duration_sec, 2),
+            "width": self.width,
+            "height": self.height,
+            "scenes": self.scenes,
+        }
+
+
 def _r(value: float) -> float:
     return round(value, 2)
 
@@ -109,13 +129,21 @@ class PlanContext:
     silences: list[Silence]
     music_tracks: list[dict[str, Any]] = field(default_factory=list)  # [{"id","mood"}]
     creator_profile: dict[str, str] = field(default_factory=dict)  # {"niche","purpose"}
+    broll_sources: list[BrollSourceInfo] = field(default_factory=list)  # P13: optional cutaway sources
 
     @property
     def music_ids(self) -> set[str]:
         return {str(t["id"]) for t in self.music_tracks}
 
+    @property
+    def source_durations(self) -> dict[str, float]:
+        """`{source_id: duration_sec}` for every source a `Clip.source_id` may reference (P13)."""
+        durations = {"primary": self.source.duration_sec}
+        durations.update({b.source_id: b.duration_sec for b in self.broll_sources})
+        return durations
+
     def _shared(self, job: dict[str, Any], preset: PresetRules) -> dict[str, Any]:
-        return {
+        data = {
             "source": self.source.as_dict(),
             "job": job,
             "preset_rules": preset_rules_dict(preset),
@@ -123,6 +151,9 @@ class PlanContext:
             "silences": [{"start": _r(s.start), "end": _r(s.end)} for s in self.silences],
             "music_tracks": [{"id": t["id"], "mood": t.get("mood", "")} for t in self.music_tracks],
         }
+        if self.broll_sources:
+            data["broll_sources"] = [b.as_dict() for b in self.broll_sources]
+        return data
 
     def planner_input(self, job: dict[str, Any], preset: PresetRules) -> dict[str, Any]:
         """User message of the planner (B.2)."""

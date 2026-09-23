@@ -115,6 +115,19 @@ def test_snap_cuts_undoes_a_new_overlap_between_neighbours() -> None:
     assert [(c.src_in, c.src_out) for c in snapped.clips] == [(0.0, 5.0), (5.1, 9.0)]
 
 
+def test_snap_cuts_leaves_broll_clips_untouched() -> None:
+    """A B-roll clip's src_in/src_out index into its OWN file - snapping them to the PRIMARY transcript's
+    word/silence timing would be meaningless (P13)."""
+    transcript = make_transcript([("mid", 1.6, 2.4)])  # word overlapping the broll clip's own range below
+    plan = make_plan([(0.0, 5.0)])
+    broll = plan.clips[0].model_copy(
+        update={"id": "c2", "source_id": "broll_1", "src_in": 1.9, "src_out": 3.3}
+    )
+    plan = plan.model_copy(update={"clips": [plan.clips[0], broll]})
+    snapped = snap_cuts(plan, transcript, [])
+    assert (snapped.clips[1].src_in, snapped.clips[1].src_out) == (1.9, 3.3)
+
+
 def test_snap_cuts_is_pure() -> None:
     plan = make_plan([(1.9, 3.3)])
     snap_cuts(plan, make_transcript([("b", 1.6, 2.4)]), [])
@@ -185,7 +198,11 @@ def test_a_small_square_source_forces_fit_blur_and_skips_zoom() -> None:
 )
 def test_normal_sources_keep_the_ai_chosen_fill_mode(width: int | None, height: int | None) -> None:
     plan = apply_rhythm(
-        make_plan([(0, 4), (5, 9)]), EMPTY, get_preset("dynamic_reels"), source_width=width, source_height=height
+        make_plan([(0, 4), (5, 9)]),
+        EMPTY,
+        get_preset("dynamic_reels"),
+        source_width=width,
+        source_height=height,
     )
     assert [c.reframe.mode for c in plan.clips] == ["fill", "fill"]
 

@@ -92,7 +92,10 @@ def audio_filter(clip: Clip) -> str:
     if clip.speed != 1.0:
         parts.append(f"atempo={clip.speed:g}")  # one instance covers the schema's 0.5..2.0 range
     parts.append(f"volume={0 if clip.audio.mute else clip.audio.volume:g}")
-    parts += ["aresample=48000", "aformat=channel_layouts=stereo"]
+    # `apad` pads with silence if the (possibly dubbed-in, P13) audio window decodes shorter than the
+    # video: the trailing `-t {out_dur}` on the whole command still caps it, so this only ever adds
+    # silence, never extra length.
+    parts += ["aresample=48000", "aformat=channel_layouts=stereo", "apad"]
     return ",".join(parts)
 
 
@@ -106,6 +109,7 @@ async def render_clip(
     fps: int,
     has_audio: bool | None = None,
     audio_duration_sec: float | None = None,
+    audio_source: Path | None = None,
     preset: str = "veryfast",
     crf: int = 21,
     audio_bitrate_k: int = 160,
@@ -117,12 +121,18 @@ async def render_clip(
     starts at/after the SOURCE'S AUDIO STREAM'S OWN duration (some recordings have a shorter audio track
     than video track, e.g. the mic cutting out before the camera stops) - gets a silent stereo track
     (`anullsrc`) instead, so that every clip has identical streams and the join can use `-c copy` or xfade.
+
+    P13 B-roll dub: when `clip.audio.source == "primary"`, `audio_source` (the job's PRIMARY file, always
+    passed by the caller in that case) supplies the audio instead - trimmed to `clip.audio.primary_src_in/
+    primary_src_out` - so the narration keeps playing under a muted-video B-roll cutaway. `has_audio`/
+    `audio_duration_sec` are about `source`'s own track and are irrelevant (and skipped) in that case.
     """
-    if has_audio is None or audio_duration_sec is None:
+    dub = audio_source is not None and clip.audio.source == "primary"
+    if not dub and (has_audio is None or audio_duration_sec is None):
         info = await probe(str(source))
         has_audio = info.has_audio if has_audio is None else has_audio
         audio_duration_sec = info.audio_duration_sec if audio_duration_sec is None else audio_duration_sec
-    if has_audio and audio_duration_sec is not None and clip.src_in >= audio_duration_sec:
+    if not dub and has_audio and audio_duration_sec is not None and clip.src_in >= audio_duration_sec:
         has_audio = False
     src_dur = clip.src_out - clip.src_in
     out_dur = clip.out_duration
@@ -138,8 +148,15 @@ async def render_clip(
         "-i",
         str(source),
     ]
-    if not has_audio:
+    if dub:
+        a_in, a_out = clip.audio.primary_src_in or 0.0, clip.audio.primary_src_out or 0.0
+        args += ["-ss", f"{a_in:.3f}", "-t", f"{a_out - a_in:.3f}", "-i", str(audio_source)]
+        audio_map = "1:a:0"
+    elif not has_audio:
         args += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+        audio_map = "1:a:0"
+    else:
+        audio_map = "0:a:0"
 
     if clip.reframe.mode == "fit_blur":
         args += ["-filter_complex", fit_blur_graph(target_w, target_h, clip.speed, fps), "-map", "[v]"]
@@ -150,7 +167,7 @@ async def render_clip(
             f"{stabilize()},{color_polish()},{chain},setpts=PTS/{clip.speed:g},fps={fps},format=yuv420p",
             "-map", "0:v:0",
         ]  # fmt: skip
-    args += ["-af", audio_filter(clip), "-map", "0:a:0" if has_audio else "1:a:0", "-t", f"{out_dur:.3f}"]
+    args += ["-af", audio_filter(clip), "-map", audio_map, "-t", f"{out_dur:.3f}"]
     args += [
         "-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-profile:v", "high", "-g", str(2 * fps),
         "-c:a", "aac", "-b:a", f"{audio_bitrate_k}k", "-ar", "48000", "-ac", "2",
