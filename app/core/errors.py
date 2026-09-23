@@ -134,6 +134,12 @@ class RenderError(DomainError):
     http_status = 500
 
 
+class TooManyBrollSources(DomainError):
+    code = "TOO_MANY_BROLL_SOURCES"
+    message_uz = "B-roll video sonidan chegaradan oshdi."
+    http_status = 429
+
+
 class TrialTooLong(DomainError):
     code = "TRIAL_TOO_LONG"
     http_status = 422

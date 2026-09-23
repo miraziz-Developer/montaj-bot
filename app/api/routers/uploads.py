@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_user, get_storage
@@ -21,17 +21,19 @@ from app.core.errors import (
     SizeMismatch,
     TooLong,
     TooManyActiveJobs,
+    TooManyBrollSources,
     TrialTooLong,
     UnsupportedType,
 )
-from app.models.enums import JobStatus, UploadStatus
+from app.models.enums import JobStatus, SourceRole, UploadStatus
 from app.models.job import Job
+from app.models.job_source import JobSource
 from app.models.upload import Upload
 from app.models.user import User
-from app.schemas.api import BlocksOut, CompleteOut, UploadInitIn, UploadInitOut
+from app.schemas.api import AttachIn, AttachOut, BlocksOut, CompleteOut, UploadInitIn, UploadInitOut
 from app.services.billing import trial_available
 from app.services.jobs import count_active_jobs
-from app.services.media.probe import probe
+from app.services.media.probe import ProbeResult, probe
 from app.services.storage import BlobStorage
 from app.services.units import compute_units
 
@@ -157,22 +159,11 @@ async def _reject(session: AsyncSession, upload: Upload) -> None:
     await session.commit()
 
 
-@router.post("/{upload_id}/complete", response_model=CompleteOut)
-async def complete_upload(
-    upload_id: uuid.UUID,
-    user: User = Depends(current_user),
-    session: AsyncSession = Depends(get_session),
-    settings: Settings = Depends(get_settings),
-    storage: BlobStorage = Depends(get_storage),
-) -> CompleteOut:
-    upload = await _get_owned_upload(session, user, upload_id, lock=True)
-
-    if upload.status == UploadStatus.VERIFIED:  # idempotent: same job again
-        job = (await session.execute(select(Job).where(Job.upload_id == upload.id))).scalar_one()
-        return _complete_body(job, upload, user)
-    if upload.status not in (UploadStatus.INIT, UploadStatus.UPLOADED):
-        raise InvalidState()
-
+async def _verify_blob_and_probe(
+    session: AsyncSession, upload: Upload, storage: BlobStorage, settings: Settings
+) -> ProbeResult:
+    """Shared by `complete_upload` and `attach_broll`: confirm the blob landed intact and probe it.
+    Rejects `upload` (persisting REJECTED) and raises on any failure."""
     container = settings.azure_uploads_container
     size = await storage.get_blob_size(container, upload.blob_path)
     if size is None:
@@ -191,6 +182,26 @@ async def complete_upload(
     if info.duration_sec > settings.max_video_duration_sec:
         await _reject(session, upload)
         raise TooLong()
+    return info
+
+
+@router.post("/{upload_id}/complete", response_model=CompleteOut)
+async def complete_upload(
+    upload_id: uuid.UUID,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+    storage: BlobStorage = Depends(get_storage),
+) -> CompleteOut:
+    upload = await _get_owned_upload(session, user, upload_id, lock=True)
+
+    if upload.status == UploadStatus.VERIFIED:  # idempotent: same job again
+        job = (await session.execute(select(Job).where(Job.upload_id == upload.id))).scalar_one()
+        return _complete_body(job, upload, user)
+    if upload.status not in (UploadStatus.INIT, UploadStatus.UPLOADED):
+        raise InvalidState()
+
+    info = await _verify_blob_and_probe(session, upload, storage, settings)
     uses_trial = user.balance_units == 0 and trial_available(user)
     if uses_trial and info.duration_sec > settings.trial_max_duration_sec:
         await _reject(session, upload)
@@ -214,7 +225,67 @@ async def complete_upload(
     )
     session.add(job)
     await session.flush()
+    session.add(JobSource(job_id=job.id, upload_id=upload.id, role=SourceRole.PRIMARY, position=0))
     body = _complete_body(job, upload, user)
     await session.commit()
     logger.info("upload verified user_id=%s upload_id=%s job_id=%s", user.id, upload.id, job.id)
     return body
+
+
+@router.post("/{upload_id}/attach", response_model=AttachOut)
+async def attach_broll(
+    upload_id: uuid.UUID,
+    body: AttachIn,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+    storage: BlobStorage = Depends(get_storage),
+) -> AttachOut:
+    """Attach an extra, already-uploaded video to an existing job as B-roll (P13). The job must still be
+    AWAITING_CONFIRM (before `confirm_job` queues it) and under the b-roll cap."""
+    upload = await _get_owned_upload(session, user, upload_id, lock=True)
+    job = (
+        await session.execute(
+            select(Job)
+            .where(Job.id == body.job_id, Job.user_id == user.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if job is None:
+        raise NotFound()
+    if job.status != JobStatus.AWAITING_CONFIRM:
+        raise InvalidState()
+    if upload.status not in (UploadStatus.INIT, UploadStatus.UPLOADED):
+        raise InvalidState()
+
+    existing = (
+        await session.execute(
+            select(func.count())
+            .select_from(JobSource)
+            .where(JobSource.job_id == job.id, JobSource.role == SourceRole.BROLL)
+        )
+    ).scalar_one()
+    if existing >= settings.max_broll_sources_per_job:
+        raise TooManyBrollSources()
+
+    info = await _verify_blob_and_probe(session, upload, storage, settings)
+    upload.duration_sec = info.duration_sec
+    upload.width = info.width
+    upload.height = info.height
+    upload.fps = info.fps
+    upload.has_audio = info.has_audio
+    upload.video_codec = info.video_codec
+    upload.status = UploadStatus.VERIFIED
+    upload.verified_at = datetime.now(UTC)
+    session.add(JobSource(job_id=job.id, upload_id=upload.id, role=SourceRole.BROLL, position=existing + 1))
+    job.units_cost += settings.broll_surcharge_units
+    await session.commit()
+    logger.info("broll attached user_id=%s upload_id=%s job_id=%s", user.id, upload.id, job.id)
+    return AttachOut(
+        upload_id=upload.id,
+        duration_sec=info.duration_sec,
+        width=info.width,
+        height=info.height,
+        broll_count=existing + 1,
+        units_cost=job.units_cost,
+    )

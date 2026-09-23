@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     free_revisions_per_job: int = 2
     revision_cost_units: int = 1
     max_active_jobs_per_user: int = 2
+    max_broll_sources_per_job: int = 4
+    broll_surcharge_units: int = 1
 
     llm_provider: str = "gemini"
     gemini_api_key: str = ""

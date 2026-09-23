@@ -58,6 +58,19 @@ class CompleteOut(BaseModel):
     balance_after: int
 
 
+class AttachIn(BaseModel):
+    job_id: uuid.UUID
+
+
+class AttachOut(BaseModel):
+    upload_id: uuid.UUID
+    duration_sec: float
+    width: int
+    height: int
+    broll_count: int
+    units_cost: int
+
+
 class ConfirmIn(BaseModel):
     aspect: Aspect
     style_preset: StylePreset

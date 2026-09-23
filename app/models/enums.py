@@ -26,6 +26,14 @@ class UploadStatus(StrEnum):
     EXPIRED = "EXPIRED"
 
 
+class SourceRole(StrEnum):
+    """A job_sources row's role (P13 multi-source B-roll): PRIMARY drives narration/captions/billing,
+    unchanged from the single-source pipeline; BROLL is muted cutaway footage the AI may insert."""
+
+    PRIMARY = "PRIMARY"
+    BROLL = "BROLL"
+
+
 class LedgerReason(StrEnum):
     PURCHASE = "purchase"
     RESERVE = "reserve"

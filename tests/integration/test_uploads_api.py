@@ -7,7 +7,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Job, Upload, User
-from app.models.enums import JobStatus, UploadStatus
+from app.models.enums import JobStatus, SourceRole, UploadStatus
+from app.models.job_source import JobSource
 from tests.factories import create_job
 from tests.fakes.storage import FakeBlobStorage
 from tests.integration.conftest import FakeProbe, auth_headers
@@ -335,3 +336,110 @@ async def test_long_video_ok_for_paying_user_even_if_trial_limit_exceeded(
     upload_id = await _init_and_put(client, fake_storage, user)
     response = await client.post(f"/api/uploads/{upload_id}/complete", headers=auth_headers(100))
     assert response.status_code == 200 and response.json()["is_trial"] is False
+
+
+# ---------- attach (P13 multi-source B-roll) ----------
+
+
+async def _confirmed_job(
+    client: httpx.AsyncClient, storage: FakeBlobStorage, user: User, *, balance: int = 5
+) -> dict:
+    upload_id = await _init_and_put(client, storage, user, blob_size=SIZE)
+    response = await client.post(f"/api/uploads/{upload_id}/complete", headers=auth_headers(user.telegram_id))
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def test_attach_broll_success(
+    client: httpx.AsyncClient,
+    make_user: MakeUser,
+    fake_storage: FakeBlobStorage,
+    fake_probe: FakeProbe,
+    session: AsyncSession,
+) -> None:
+    user = await make_user(100, balance=5)
+    primary = await _confirmed_job(client, fake_storage, user)
+    broll_id = await _init_and_put(client, fake_storage, user)
+
+    response = await client.post(
+        f"/api/uploads/{broll_id}/attach",
+        json={"job_id": primary["job_id"]},
+        headers=auth_headers(100),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["broll_count"] == 1
+    assert body["units_cost"] == primary["units_cost"] + 1
+
+    upload = await session.get(Upload, uuid.UUID(broll_id))
+    assert upload.status == UploadStatus.VERIFIED
+    count = await session.scalar(
+        select(func.count())
+        .select_from(JobSource)
+        .where(
+            JobSource.job_id == uuid.UUID(primary["job_id"]),
+            JobSource.role == SourceRole.BROLL,
+        )
+    )
+    assert count == 1
+
+
+async def test_attach_wrong_job_owner_is_404(
+    client: httpx.AsyncClient, make_user: MakeUser, fake_storage: FakeBlobStorage, fake_probe: FakeProbe
+) -> None:
+    owner = await make_user(100, balance=5)
+    other = await make_user(200)
+    primary = await _confirmed_job(client, fake_storage, owner)
+    broll_id = await _init_and_put(client, fake_storage, other)
+
+    response = await client.post(
+        f"/api/uploads/{broll_id}/attach",
+        json={"job_id": primary["job_id"]},
+        headers=auth_headers(200),
+    )
+    assert (response.status_code, response.json()["error"]["code"]) == (404, "NOT_FOUND")
+
+
+async def test_attach_requires_awaiting_confirm(
+    client: httpx.AsyncClient,
+    make_user: MakeUser,
+    fake_storage: FakeBlobStorage,
+    fake_probe: FakeProbe,
+    session: AsyncSession,
+) -> None:
+    user = await make_user(100, balance=5)
+    primary = await _confirmed_job(client, fake_storage, user)
+    job = await session.get(Job, uuid.UUID(primary["job_id"]))
+    job.status = JobStatus.QUEUED
+    await session.commit()
+    broll_id = await _init_and_put(client, fake_storage, user)
+
+    response = await client.post(
+        f"/api/uploads/{broll_id}/attach",
+        json={"job_id": primary["job_id"]},
+        headers=auth_headers(100),
+    )
+    assert (response.status_code, response.json()["error"]["code"]) == (409, "INVALID_STATE")
+
+
+async def test_attach_rejects_past_the_broll_cap(
+    client: httpx.AsyncClient, make_user: MakeUser, fake_storage: FakeBlobStorage, fake_probe: FakeProbe
+) -> None:
+    user = await make_user(100, balance=5)
+    primary = await _confirmed_job(client, fake_storage, user)
+    for _ in range(4):  # default cap: settings.max_broll_sources_per_job == 4
+        broll_id = await _init_and_put(client, fake_storage, user)
+        ok = await client.post(
+            f"/api/uploads/{broll_id}/attach",
+            json={"job_id": primary["job_id"]},
+            headers=auth_headers(100),
+        )
+        assert ok.status_code == 200, ok.text
+
+    one_too_many = await _init_and_put(client, fake_storage, user)
+    response = await client.post(
+        f"/api/uploads/{one_too_many}/attach",
+        json={"job_id": primary["job_id"]},
+        headers=auth_headers(100),
+    )
+    assert (response.status_code, response.json()["error"]["code"]) == (429, "TOO_MANY_BROLL_SOURCES")
