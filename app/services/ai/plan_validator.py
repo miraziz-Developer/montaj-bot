@@ -108,7 +108,29 @@ def _piece_role(original: str, index: int, count: int) -> str:
     return original
 
 
-def apply_rhythm(plan: EditPlan, transcript: Transcript, preset: PresetRules) -> EditPlan:
+def _looks_like_a_round_video_note(width: int | None, height: int | None) -> bool:
+    """Telegram "video note" round messages (and similar saved/reposted clips) are always exactly square
+    and small, with the real content circle-masked - black corners baked into the pixels. `fill` mode's
+    center crop then keeps the FULL height of that circle, showing mostly black near the top/bottom of the
+    frame (the circle is narrow there) - unlike a normal square PHOTO/video, which has real content in its
+    corners too and crops cleanly. A small square is the only cheap, reliable signal available here (no
+    frame pixel analysis): genuine square footage from a phone or a proper camera is essentially never this
+    small, but a video note commonly is (Telegram renders these around 240-640px)."""
+    if not width or not height:
+        return False
+    is_square = abs(width - height) / max(width, height) < 0.02
+    is_small = min(width, height) <= 640
+    return is_square and is_small
+
+
+def apply_rhythm(
+    plan: EditPlan,
+    transcript: Transcript,
+    preset: PresetRules,
+    *,
+    source_width: int | None = None,
+    source_height: int | None = None,
+) -> EditPlan:
     """Split clips longer than `max_shot_sec`, alternate zoom levels, renumber ids."""
     clips: list[Clip] = []
     for clip in plan.clips:
@@ -124,7 +146,13 @@ def apply_rhythm(plan: EditPlan, transcript: Transcript, preset: PresetRules) ->
                     }
                 )
             )
-    if not (plan.target.aspect == "16:9" and preset.key in _NO_ZOOM_PRESETS):
+    if _looks_like_a_round_video_note(source_width, source_height):
+        # Overrides the AI's reframe choice entirely - like zoom_levels/crossfade_sec, this is a code
+        # decision, not something the model is well-positioned to judge from a single analyzed frame.
+        for i, clip in enumerate(clips):
+            reframe = clip.reframe.model_copy(update={"mode": "fit_blur"})
+            clips[i] = clip.model_copy(update={"reframe": reframe})
+    elif not (plan.target.aspect == "16:9" and preset.key in _NO_ZOOM_PRESETS):
         levels = preset.zoom_levels
         for i, clip in enumerate(clips):
             reframe = clip.reframe.model_copy(update={"zoom": levels[i % len(levels)]})

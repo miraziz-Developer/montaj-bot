@@ -73,7 +73,10 @@ services:
     volumes: !override
       - montaj_tmp:/tmp/montaj
     restart: unless-stopped
-    mem_limit: ${WORKER_MEM_LIMIT:-1536m}
+    # 1536m was the original MVP default; a crossfade-transition render (filter_complex xfade/acrossfade,
+    # no stream copy) measured needing ~4GB for an 8-clip video and was silently SIGKILL'd (ffmpeg exit -9)
+    # at 1536m. Real per-VM memory budget: check `free -h` and this file's other *_MEM_LIMIT defaults first.
+    mem_limit: ${WORKER_MEM_LIMIT:-3072m}
     logging: *logging
 
   caddy:

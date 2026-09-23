@@ -161,6 +161,35 @@ def test_zoom_alternates_through_the_preset_levels() -> None:
     assert [c.reframe.zoom for c in plan.clips] == [1.0, 1.15, 1.0]
 
 
+def test_a_small_square_source_forces_fit_blur_and_skips_zoom() -> None:
+    """Telegram round video notes are always small and square (see _looks_like_a_round_video_note); `fill`
+    mode's center crop on one shows mostly the black circle-mask corners near the top/bottom of the frame."""
+    plan = apply_rhythm(
+        make_plan([(0, 4), (5, 9)]),
+        EMPTY,
+        get_preset("dynamic_reels"),
+        source_width=400,
+        source_height=400,
+    )
+    assert [c.reframe.mode for c in plan.clips] == ["fit_blur", "fit_blur"]
+    assert [c.reframe.zoom for c in plan.clips] == [1.0, 1.0]  # zoom is meaningless in fit_blur, left alone
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [
+        (1920, 1080),  # normal 16:9 phone footage - the common, good case
+        (1080, 1080),  # a real square video (Instagram-style), too large to be a video note
+        (None, None),  # unknown source size (e.g. a caller that omits it)
+    ],
+)
+def test_normal_sources_keep_the_ai_chosen_fill_mode(width: int | None, height: int | None) -> None:
+    plan = apply_rhythm(
+        make_plan([(0, 4), (5, 9)]), EMPTY, get_preset("dynamic_reels"), source_width=width, source_height=height
+    )
+    assert [c.reframe.mode for c in plan.clips] == ["fill", "fill"]
+
+
 def test_crossfade_applied_between_clips_but_never_before_the_first() -> None:
     plan = apply_rhythm(make_plan([(0, 4), (5, 9), (10, 14)]), EMPTY, get_preset("dynamic_reels"))
     transitions = [(c.transition_in.type, c.transition_in.duration) for c in plan.clips]

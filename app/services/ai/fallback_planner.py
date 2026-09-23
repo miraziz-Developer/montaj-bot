@@ -58,6 +58,8 @@ def build_fallback_plan(
     music_tracks: Sequence[dict[str, Any]],
     aspect: str,
     is_trial: bool,
+    source_width: int | None = None,
+    source_height: int | None = None,
 ) -> EditPlan:
     has_speech = bool(transcript.all_words())
     if has_speech:
@@ -94,4 +96,6 @@ def build_fallback_plan(
         watermark=Watermark(enabled=is_trial, text=DEFAULT_WATERMARK_TEXT if is_trial else ""),
         human_summary_uz=SUMMARY_TEMPLATE.format(preset_label=preset_rules.label),
     )
-    return apply_rhythm(plan, transcript, preset_rules)
+    return apply_rhythm(
+        plan, transcript, preset_rules, source_width=source_width, source_height=source_height
+    )

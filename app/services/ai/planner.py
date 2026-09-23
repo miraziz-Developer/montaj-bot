@@ -54,7 +54,9 @@ def _finalize(
 
     plan = force(plan)
     plan = snap_cuts(plan, ctx.transcript, ctx.silences)
-    plan = apply_rhythm(plan, ctx.transcript, preset)
+    plan = apply_rhythm(
+        plan, ctx.transcript, preset, source_width=ctx.source.width, source_height=ctx.source.height
+    )
     plan, errors = validate_plan(plan, ctx.source.duration_sec, preset, ctx.music_ids)
     return force(plan), errors
 
@@ -89,6 +91,8 @@ def _fallback(ctx: PlanContext, job: Job, preset: PresetRules, watermark_text: s
         music_tracks=ctx.music_tracks,
         aspect=settings["aspect"],
         is_trial=job.is_trial,
+        source_width=ctx.source.width,
+        source_height=ctx.source.height,
     )
     plan, errors = validate_plan(plan, ctx.source.duration_sec, preset, ctx.music_ids)
     if errors:
