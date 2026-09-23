@@ -145,6 +145,18 @@ p {
   grid-template-columns: 1fr;
 }
 
+#broll-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#broll-list p {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+}
+
 .choice {
   min-height: 48px;
   padding: 10px 12px;

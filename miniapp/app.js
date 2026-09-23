@@ -14,7 +14,8 @@ const tg = window.Telegram?.WebApp ?? {
   close: () => window.close(),
 };
 
-const state = { me: null, abort: null, job: null, format: "9:16", style: "dynamic_reels" };
+const MAX_BROLL = 4;
+const state = { me: null, abort: null, job: null, broll: [], format: "9:16", style: "dynamic_reels" };
 
 // ---------- helpers ----------
 
@@ -219,7 +220,8 @@ async function startUpload(file) {
     }
     clearSaved();
     state.job = result;
-    renderConfirm();
+    state.broll = [];
+    renderBroll();
   } catch (error) {
     if (error instanceof UploadAbortedError) return renderHome();
     if (error instanceof ApiError && error.status >= 400 && error.code !== "BLOB_MISSING") clearSaved();
@@ -227,6 +229,70 @@ async function startUpload(file) {
   } finally {
     setClosingGuard(false);
     state.abort = null;
+  }
+}
+
+// ---------- B-roll (P13/P15: optional extra cutaway clips) ----------
+
+function renderBrollList() {
+  const container = $("broll-list");
+  container.replaceChildren();
+  state.broll.forEach((item, i) => {
+    const row = document.createElement("p");
+    row.className = "hint";
+    row.textContent = t.brollItem(i + 1, clock(item.duration_sec));
+    container.append(row);
+  });
+  const atCap = state.broll.length >= MAX_BROLL;
+  $("broll-add-btn").disabled = atCap;
+  $("broll-add-btn").textContent = atCap ? t.brollCapReached : t.brollAdd;
+}
+
+function renderBroll() {
+  $("broll-title").textContent = t.brollTitle;
+  $("broll-hint").textContent = t.brollHint;
+  $("broll-continue-btn").textContent = t.brollContinue;
+  $("broll-status").hidden = true;
+  renderBrollList();
+  show("broll");
+}
+
+async function addBroll(file) {
+  if (!ALLOWED_EXTENSIONS.includes(extensionOf(file.name))) return showError(t.unsupportedFile, renderBroll);
+  if (file.size === 0) return showError(t.emptyFile, renderBroll);
+  $("broll-add-btn").disabled = true;
+  $("broll-continue-btn").disabled = true;
+  $("broll-status").hidden = false;
+  $("broll-status").textContent = t.brollUploading(0);
+  try {
+    const init = await api.post("/api/uploads/init", {
+      filename: file.name,
+      size_bytes: file.size,
+      content_type: file.type || "video/mp4",
+    });
+    await uploadFile({
+      file,
+      uploadUrl: init.upload_url,
+      blockSize: init.block_size,
+      maxParallel: init.max_parallel,
+      getUploadedBlockIds: async () =>
+        (await api.get(`/api/uploads/${init.upload_id}/blocks`)).uploaded_block_ids,
+      refreshUploadUrl: async () => (await api.post(`/api/uploads/${init.upload_id}/resume`)).upload_url,
+      onProgress: (snapshot) => {
+        $("broll-status").textContent = t.brollUploading(snapshot.percent);
+      },
+    });
+    $("broll-status").textContent = t.verifying;
+    const attached = await api.post(`/api/uploads/${init.upload_id}/attach`, { job_id: state.job.job_id });
+    state.broll.push(attached);
+    state.job.units_cost = attached.units_cost;
+    if (!state.job.is_trial) state.job.balance_after = state.me.balance_units - attached.units_cost;
+    $("broll-status").hidden = true;
+    renderBrollList();
+  } catch (error) {
+    showError(error instanceof ApiError ? error : t.genericError, renderBroll);
+  } finally {
+    $("broll-continue-btn").disabled = false;
   }
 }
 
@@ -263,6 +329,10 @@ function applyStaticText() {
   $("pick-btn").textContent = t.pickVideo;
   $("upload-cancel").textContent = t.cancel;
   $("verifying-text").textContent = t.verifying;
+  $("broll-title").textContent = t.brollTitle;
+  $("broll-hint").textContent = t.brollHint;
+  $("broll-add-btn").textContent = t.brollAdd;
+  $("broll-continue-btn").textContent = t.brollContinue;
   $("format-title").textContent = t.formatTitle;
   $("style-title").textContent = t.styleTitle;
   $("brief-label").textContent = t.briefLabel;
@@ -283,6 +353,13 @@ function bindEvents() {
     if (file) startUpload(file);
   };
   $("upload-cancel").onclick = () => state.abort?.abort();
+  $("broll-add-btn").onclick = () => $("broll-file-input").click();
+  $("broll-file-input").onchange = (event) => {
+    const [file] = event.target.files;
+    event.target.value = "";
+    if (file) addBroll(file);
+  };
+  $("broll-continue-btn").onclick = renderConfirm;
   $("start-btn").onclick = confirmJob;
   $("tariffs-btn").onclick = () => tg.close();
   $("error-tariffs").onclick = () => tg.close();

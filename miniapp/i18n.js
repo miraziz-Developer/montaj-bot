@@ -30,6 +30,15 @@ export const t = {
   unsupportedFile: "Bu fayl turi qo‘llab-quvvatlanmaydi.",
   emptyFile: "Fayl bo‘sh.",
   insufficient: "Birliklar yetarli emas.",
+  brollTitle: "B-roll qo‘shish (ixtiyoriy)",
+  brollHint:
+    "Diktor gapirayotganda ko‘rsatiladigan qo‘shimcha kadrlar (masalan, mahsulotning boshqa burchagi). " +
+    "AI mos joyda ishlatadi. Eng ko‘pi 4 ta, qo‘shilgandan keyin olib tashlab bo‘lmaydi.",
+  brollAdd: "➕ Video qo‘shish",
+  brollContinue: "Davom etish",
+  brollUploading: (pct) => `Yuklanmoqda… ${pct}%`,
+  brollItem: (n, sec) => `B-roll ${n} — ${sec}`,
+  brollCapReached: "Eng ko‘pi 4 ta B-roll qo‘shish mumkin.",
 };
 
 export const FORMATS = [
