@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -73,10 +74,20 @@ def test_crossfade_offset_is_the_running_timeline_minus_the_overlap() -> None:
     clips = [_clip(), _clip(Transition(type="crossfade", duration=0.5))]
     filter_complex, v, a = build_transition_filter_complex([2.0, 3.0], clips)
     assert filter_complex == (
-        "[0:v][1:v]xfade=transition=fade:duration=0.500:offset=1.500,format=yuv420p[v1];"
+        "[0:v][1:v]xfade=transition=dissolve:duration=0.500:offset=1.500,format=yuv420p[v1];"
         "[0:a][1:a]acrossfade=d=0.500[a1]"
     )
     assert (v, a) == ("v1", "a1")
+
+
+def test_crossfade_rotates_through_a_few_tasteful_transitions_by_clip_index() -> None:
+    # rotation is keyed by each clip's raw index (i=1 -> "dissolve", matching the other single-transition
+    # tests above), not by a separate "how many transitions so far" counter - it wraps back to "fade" once
+    # the index passes the rotation length.
+    clips = [_clip(), *(_clip(Transition(type="crossfade", duration=0.2)) for _ in range(6))]
+    filter_complex, _, _ = build_transition_filter_complex([1.0] * 7, clips)
+    names = re.findall(r"transition=(\w+):", filter_complex)
+    assert names == ["dissolve", "smoothleft", "smoothright", "circleopen", "zoomin", "fade"]
 
 
 def test_fade_black_maps_to_the_fadeblack_xfade_transition() -> None:
@@ -103,7 +114,7 @@ def test_mixed_cut_and_crossfade_advance_the_timeline_correctly() -> None:
     clips = [_clip(), _clip(), _clip(Transition(type="crossfade", duration=0.5))]
     filter_complex, v, a = build_transition_filter_complex([2.0, 3.0, 1.0], clips)
     assert "concat=n=2:v=1:a=1[v1][a1]" in filter_complex
-    assert "[v1][2:v]xfade=transition=fade:duration=0.500:offset=4.500" in filter_complex
+    assert "[v1][2:v]xfade=transition=smoothleft:duration=0.500:offset=4.500" in filter_complex
     assert (v, a) == ("v2", "a2")
 
 

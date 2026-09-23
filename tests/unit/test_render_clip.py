@@ -9,9 +9,11 @@ from app.services.media.probe import media_duration, probe
 from app.services.render.clip_stage import (
     MIN_ANIMATE_SEC,
     audio_filter,
+    color_polish,
     fill_chain,
     fit_blur_graph,
     render_clip,
+    stabilize,
 )
 from app.services.render.engine import output_resolution
 
@@ -93,9 +95,8 @@ def test_fill_chain_animation_boundary_is_exactly_min_animate_sec() -> None:
 def test_fit_blur_graph_keeps_ffmpeg_variables_literal() -> None:
     graph = fit_blur_graph(1080, 1920, 1.5, 30)
     assert "overlay=(W-w)/2:(H-h)/2,setpts=PTS/1.5,fps=30,format=yuv420p[v]" in graph
-    assert graph.startswith(
-        "[0:v]split=2[a][b];[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[bg]"
-    )
+    assert graph.startswith(f"[0:v]{color_polish()}[polished];[polished]split=2[a][b];")
+    assert "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[bg]" in graph
 
 
 def test_audio_filter_omits_atempo_at_normal_speed_and_mutes_with_volume_zero() -> None:
@@ -204,6 +205,29 @@ async def test_both_reframe_modes_produce_the_requested_size(
     )
     info = await probe(str(out))
     assert (info.width, info.height) == target
+    assert info.duration_sec == pytest.approx(1.5, abs=0.15)
+
+
+def test_color_polish_has_no_brightness_or_chroma_sharpening() -> None:
+    """Deliberately conservative: contrast/saturation only, no brightness (clipping risk), luma-only sharpen."""
+    polish = color_polish()
+    assert "contrast=" in polish and "saturation=" in polish
+    assert "brightness=" not in polish
+    assert "ca=0.0" in polish  # chroma sharpen amount is zero
+
+
+def test_stabilize_is_deshake() -> None:
+    assert stabilize() == "deshake"
+
+
+async def test_fit_blur_mode_applies_color_polish_and_still_renders(
+    clip_two_scenes: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "c.mp4"
+    clip = Clip(id="c1", src_in=0, src_out=1.5, reframe=Reframe(mode="fit_blur"))  # type: ignore[arg-type]
+    await render_clip(clip_two_scenes, clip, out_path=out, target_w=360, target_h=640, fps=30)
+    info = await probe(str(out))
+    assert (info.width, info.height) == (360, 640)
     assert info.duration_sec == pytest.approx(1.5, abs=0.15)
 
 

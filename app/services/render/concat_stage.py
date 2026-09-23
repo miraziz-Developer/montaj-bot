@@ -15,7 +15,18 @@ from app.schemas.edit_plan import Clip
 from app.services.media.ffmpeg import run_ffmpeg
 from app.services.media.probe import media_duration
 
-_XFADE_TRANSITION = {"crossfade": "fade", "fade_black": "fadeblack"}
+# "crossfade" rotates through a few tasteful, subtle built-in xfade transitions for visual variety across
+# a video's cuts (a code decision, like zoom_levels/crossfade_sec - the schema only has one "crossfade"
+# value, this doesn't add a new one). "fade_black" stays a single, deliberate effect - it is a distinct
+# visual choice (a hard beat/scene break), not "crossfade with variety".
+_CROSSFADE_ROTATION = ["fade", "dissolve", "smoothleft", "smoothright", "circleopen", "zoomin"]
+_FIXED_TRANSITION = {"fade_black": "fadeblack"}
+
+
+def _xfade_transition_name(clip_type: str, index: int) -> str:
+    if clip_type == "crossfade":
+        return _CROSSFADE_ROTATION[index % len(_CROSSFADE_ROTATION)]
+    return _FIXED_TRANSITION[clip_type]
 
 
 def quote_concat_path(path: Path) -> str:
@@ -28,7 +39,9 @@ def concat_list_text(clip_paths: list[Path]) -> str:
 
 
 def wants_transition(clip: Clip) -> bool:
-    return clip.transition_in.type in _XFADE_TRANSITION and clip.transition_in.duration > 0
+    return (
+        clip.transition_in.type == "crossfade" or clip.transition_in.type in _FIXED_TRANSITION
+    ) and clip.transition_in.duration > 0
 
 
 async def concat_clips(
@@ -72,7 +85,7 @@ def build_transition_filter_complex(
         if wants_transition(clip):
             xfade_d = min(clip.transition_in.duration, durations[i - 1], durations[i])
             offset = max(timeline - xfade_d, 0.0)
-            transition = _XFADE_TRANSITION[clip.transition_in.type]
+            transition = _xfade_transition_name(clip.transition_in.type, i)
             filters.append(
                 f"[{v_label}][{i}:v]xfade=transition={transition}:duration={xfade_d:.3f}:"
                 f"offset={offset:.3f},format=yuv420p[{nv}]"
