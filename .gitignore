@@ -1,10 +1,25 @@
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
-.env
-pgdata/
-tmp/
 .pytest_cache/
 .ruff_cache/
+
+# Secrets and local config: NEVER commit
+.env
+.env.*
+!.env.example
+
+# Local data and scratch
+pgdata/
+tmp/
+*.log
+*.sql.gz
+node_modules/
+
+# Editors / OS / tooling
 .DS_Store
+.claude/
+.idea/
+.vscode/

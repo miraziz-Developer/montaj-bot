@@ -8,13 +8,15 @@ edit fast and cheaply.
 **Key principle: the AI PLANS, FFmpeg EXECUTES.** The LLM never touches video. It outputs a validated JSON `EditPlan`
 (see docs/EDIT_PLAN_SCHEMA.md). A deterministic renderer turns the plan into FFmpeg commands.
 
-**MVP non-goals** (do NOT build now): stock b-roll insertion, AI-generated footage, face tracking, animated zoom,
-voice-message feedback, payment-provider integration (manual approval first), multi-language UI (Uzbek only), web admin panel.
+**Non-goals** (do NOT build now): stock b-roll libraries, AI-generated footage, face tracking, voice-message feedback,
+payment-provider integration (manual approval first), multi-language UI (Uzbek only), web admin panel.
+(User-attached B-roll clips, the slow Ken Burns push-in and crossfade transitions ARE implemented: see 10 and EDIT_PLAN_SCHEMA.md.)
 
 ## 2. Users and main flows
 1. `/start` -> welcome -> ask niche -> ask purpose -> (optional) share phone for free trial -> main menu.
 2. "Video yuklash" button opens the Mini App -> user picks a file -> chunked upload straight to Azure Blob ->
-   server verifies with ffprobe -> Mini App shows "N birlik, davom etamizmi?" + choose format & style -> confirm.
+   server verifies with ffprobe -> Mini App offers OPTIONAL B-roll (up to `MAX_BROLL_SOURCES_PER_JOB` extra clips, each
+   uploaded the same way and attached to the job) -> shows "N birlik, davom etamizmi?" + choose format & style -> confirm.
 3. Bot posts progress in ONE edited message: prepare -> transcribe -> analyze scenes -> build plan.
 4. Bot sends the plan (Uzbek text, timeline) with buttons: ✅ Tasdiqlash / ✏️ O‘zgartirish / ❌ Bekor qilish.
 5. "O‘zgartirish": user types what to change -> new plan version -> back to step 4 (2 free revisions per job).
@@ -31,8 +33,8 @@ Telegram user
    |                        [Azure Blob: uploads | artifacts | outputs]
    |                              ^
    +------ enqueue jobs -----> [arq worker process] -- ffmpeg, PySceneDetect
-                                   |-- STT provider (Groq Whisper / Uzbek provider)
-                                   |-- Gemini (video analysis + planner)
+                                   |-- STT provider (Groq Whisper or Azure AI Speech: STT_PROVIDER)
+                                   |-- LLM (Gemini or Azure OpenAI: LLM_PROVIDER; video analysis + planner)
                                    +-- sends Telegram messages/files via local Bot API server
 ```
 Processes (all from the same repo/image): `api`, `bot`, `worker`. Plus containers: `db`, `redis`, `telegram-bot-api`
@@ -46,33 +48,35 @@ Processes (all from the same repo/image): `api`, `bot`, `worker`. Plus container
   `WORKER_CONCURRENCY=1` by default (Azure quota is small).
 - Bot does NOT download videos from chat in MVP. If a user sends a video in chat, reply "use the Mini App button".
 - Storage access in MVP uses the storage account connection string (account key). Managed identity is a later upgrade.
-- LLM and STT sit behind interfaces (`LLMClient`, `STTProvider`) so providers can be swapped.
+- LLM and STT sit behind interfaces (`LLMClient`, `STTProvider`) so providers can be swapped. Implemented: LLM =
+  Gemini (native video input) or Azure OpenAI (`azure_llm.py`: one extracted frame per scene, strict JSON-schema output);
+  STT = Groq Whisper or Azure AI Speech Fast Transcription (`azure_speech.py`, `uz-UZ,ru-RU` auto-detect).
 
 ## 5. Repository layout
 ```
 montaj-bot/
-  AGENTS.md
+  AGENTS.md README.md install.sh            (install.sh: one-command server setup, see deploy/README_DEPLOY.md)
   docs/ (ARCHITECTURE.md, EDIT_PLAN_SCHEMA.md, RUNTIME_PROMPTS.md, QA_CHECKLIST.md)
   app/
     core/        config.py logging.py db.py security.py errors.py
-    models/      user.py ledger.py upload.py job.py plan.py payment.py enums.py
+    models/      user.py ledger.py upload.py job.py job_source.py plan.py payment.py enums.py
     schemas/     edit_plan.py analysis.py transcript.py api.py
     api/         main.py deps.py routers/{me,uploads,jobs,health}.py
     bot/         main.py texts.py keyboards.py states.py handlers/{start,menu,plans,admin,billing}.py notifier.py
     services/
       users.py billing.py tariffs.py units.py storage.py jobs.py
       media/     ffmpeg.py probe.py proxy.py audio.py silence.py scenes.py
-      stt/       base.py groq_whisper.py uzbek_stub.py fake.py
-      ai/        llm.py analysis.py planner.py presets.py snap.py plan_validator.py fallback_planner.py
-                 plan_text.py prompts/{analysis_system.md,planner_system.md,revision_system.md}
+      stt/       base.py groq_whisper.py azure_speech.py fake.py
+      ai/        llm.py azure_llm.py analysis.py planner.py presets.py snap.py plan_validator.py fallback_planner.py
+                 plan_text.py prompts/{analysis_system.md,azure_analysis_system.md,planner_system.md,revision_system.md}
       render/    engine.py clip_stage.py concat_stage.py final_stage.py captions_ass.py music.py
-    worker/      main.py tasks.py queue.py cleanup.py
+    worker/      main.py tasks.py queue.py artifacts.py failures.py recovery.py notifier.py deps.py costs.py
   assets/        fonts/ (Montserrat-Bold.ttf, NotoSans-Bold.ttf, Inter-Bold.ttf)  music/ (catalog.json + mp3s)
   miniapp/       index.html app.js style.css i18n.js
   migrations/    (alembic)
-  scripts/       configure_storage_cors.py cost_report.py e2e_smoke.py stt_eval.py dev_analyze.py
-  deploy/        docker-compose.prod.yml Caddyfile deploy.sh backup.sh azure_setup.sh lifecycle.json README_DEPLOY.md
-  tests/         fakes/ unit/ integration/
+  scripts/       configure_storage_cors.py upload_backup.py cost_report.py e2e_smoke.py dev_analyze.py
+  deploy/        docker-compose.prod.yml Caddyfile deploy.sh backup.sh azure_setup.sh lifecycle.json initdb/ README_DEPLOY.md
+  tests/         fakes/ unit/ integration/ js/ shell/
   docker-compose.yml Dockerfile Makefile pyproject.toml .env.example
 ```
 
@@ -91,6 +95,10 @@ EXPIRED), duration_sec, width, height, fps, has_audio, video_codec, created_at, 
 current_plan_version, status_message_id (bigint, Telegram message to edit), chat_id, output_blob_path, output_size_bytes,
 error_code, error_message, created_at, updated_at, finished_at,
 cost tracking: stt_seconds, llm_input_tokens, llm_output_tokens, render_seconds, est_cost_usd (numeric).
+**job_sources**: id, job_id, upload_id, role (enum: PRIMARY, BROLL), position (int), created_at; unique (job_id, upload_id).
+`jobs.upload_id` is ALWAYS the PRIMARY source (it drives transcript, captions, billing); a PRIMARY row is written when the
+job is created. BROLL rows are extra, muted cutaway clips attached while the job is AWAITING_CONFIRM (at most
+`MAX_BROLL_SOURCES_PER_JOB`); each adds `BROLL_SURCHARGE_UNITS` to `jobs.units_cost`. Clip `source_id` "broll_N" = the N-th BROLL row by position.
 **edit_plans**: id, job_id, version (int, unique with job_id), plan_json (JSONB), human_summary (text),
 source (enum: ai_initial, ai_revision, fallback), user_feedback (text nullable), created_at.
 **payments**: id, user_id, plan_code, amount_uzs, provider (manual|payme|click), status (pending, approved, rejected),
@@ -130,7 +138,7 @@ started -> no refund (compute already spent). Trial job FAILED -> `trial_used=fa
 Containers: `uploads`, `artifacts`, `outputs` (all private).
 - `uploads/{user_id}/{upload_id}/source{ext}`
 - `artifacts/{job_id}/proxy.mp4`, `audio_{n:03d}.ogg`, `transcript.json`, `scenes.json`, `silences.json`,
-  `analysis.json`, `plan_v{n}.json`
+  `analysis.json`, `broll_sources.json` (per-scene descriptions of the attached B-roll), `plan_v{n}.json`
 - `outputs/{job_id}/final.mp4`
 Retention: everything deleted after 48 h (Blob lifecycle rule, `daysAfterCreationGreaterThan: 2`) AND by the worker cron
 `cleanup_expired` as a safety net. Tell users this in the bot ("fayllar 48 soatdan keyin o‘chiriladi").
@@ -138,7 +146,9 @@ Retention: everything deleted after 48 h (Blob lifecycle rule, `daysAfterCreatio
 ## 10. Pipeline (worker)
 Working dir `TMP_DIR/{job_id}`, removed in `finally`.
 1. **download** source from Blob.
-2. **probe** (ffprobe) -> verify again.
+2. **probe** (ffprobe) -> verify again. `probe()` returns DISPLAY geometry: phone videos are stored landscape with a
+   rotation flag (width/height are swapped for 90/270), non-square pixels (SAR) are folded into the width, and PQ/HLG
+   transfer is flagged `is_hdr`. Every consumer (upload record, planner, output sizing, renderer) relies on this.
 3. **proxy**: 720p (480p if source > `LONG_VIDEO_THRESHOLD_SEC`), h264, keyframe every ~2 s, aac 64k. Upload to artifacts.
 4. **audio**: extract mono 16 kHz Opus/OGG chunks of <= 600 s -> STT -> `transcript.json` (words + segments, absolute seconds).
 5. **silences**: ffmpeg `silencedetect` -> `silences.json`.
@@ -148,6 +158,9 @@ Working dir `TMP_DIR/{job_id}`, removed in `finally`.
    and returns per-scene structured JSON -> `analysis.json` (docs/RUNTIME_PROMPTS.md section A).
 8. **plan**: planner LLM (docs/RUNTIME_PROMPTS.md section B) -> validate -> snap cuts to word/silence boundaries ->
    validate against the source -> save `edit_plans` v1. If the LLM fails twice: deterministic fallback planner.
+   With B-roll attached: each BROLL upload first gets a proxy, scene detection and a frame-only analysis (NO STT: it is
+   muted cutaway footage; cached as `broll_sources.json`); the planner may cut to it with `source_id` "broll_N" while the
+   primary narration keeps playing (`audio.source = "primary"`). Validation is per source (bounds, overlaps).
 9. Notify the user with the plan. Wait for the user.
 10. **revision** (optional loop): docs/RUNTIME_PROMPTS.md section C.
 11. **render**: docs/EDIT_PLAN_SCHEMA.md "Render recipe" -> `final.mp4` -> upload to `outputs`.
@@ -155,7 +168,12 @@ Working dir `TMP_DIR/{job_id}`, removed in `finally`.
 13. Record costs, set DONE, cleanup temp.
 Light mode for long videos (> `LONG_VIDEO_THRESHOLD_SEC`, default 1200 s): lower analysis fps (`GEMINI_ANALYSIS_FPS_LONG`),
 720p -> 480p proxy, `RENDER_PRESET=ultrafast`, output max 1080p.
-Performance expectation on a 2 vCPU VM: analysis 1–4 min for typical videos; render roughly 1–3x the OUTPUT duration.
+Render safety properties (each is covered by tests, see EDIT_PLAN_SCHEMA.md section 6): transitions join in groups of at
+most 5 inputs so ffmpeg memory stays around 1 GB for any clip count (a flat graph peaked ~3.6 GB at 15 clips); a hard cut and
+a crossfade can share one graph (all video inputs get the same timebase first); HDR is tone-mapped to SDR BT.709;
+round Telegram video notes are cropped to their inscribed square. Per-stage timings are logged (`render stages ...`).
+Performance expectation on a 2 vCPU VM: analysis 1–4 min for typical videos; a 58 s 9:16 1080p output from a 1080p source
+renders in roughly 2-3 min. `deshake` stabilisation is off by default (`RENDER_STABILIZE`): it doubled clip time.
 
 ## 11. HTTP API (FastAPI). All `/api/*` need `Authorization: tma <initData>`.
 Error body: `{"error": {"code": "...", "message_uz": "..."}}`.
@@ -167,6 +185,9 @@ Error body: `{"error": {"code": "...", "message_uz": "..."}}`.
 - `GET /api/uploads/{id}/blocks` -> `{uploaded_block_ids:[...], block_size}` (uncommitted blocks, via server credentials)
 - `POST /api/uploads/{id}/complete` -> `{job_id, duration_sec, width, height, units_cost, is_trial, balance_units, balance_after}`
   errors: BLOB_MISSING, SIZE_MISMATCH, INVALID_MEDIA, TOO_LONG, TRIAL_TOO_LONG
+- `POST /api/uploads/{id}/attach` body `{job_id}` -> `{upload_id, duration_sec, width, height, broll_count, units_cost}`:
+  attaches an already-uploaded video to the caller's job as B-roll (job must be AWAITING_CONFIRM). Same checks as `complete`
+  (size, ffprobe, `MAX_VIDEO_DURATION_SEC`); errors: TOO_MANY_BROLL_SOURCES 429, INVALID_STATE 409, NOT_FOUND 404 (+ the `complete` errors)
 - `POST /api/jobs/{id}/confirm` body `{aspect, style_preset, brief}` -> `{job_id, status:"QUEUED", balance_units}`
   errors: INSUFFICIENT_UNITS 402, INVALID_STATE 409
 - `GET /api/jobs/{id}`, `GET /api/jobs?limit=20`, `POST /api/jobs/{id}/cancel`
@@ -194,7 +215,8 @@ TELEGRAM_API_HASH=
 ADMIN_TELEGRAM_IDS=
 PUBLIC_BASE_URL=http://localhost:8000
 # production only (deploy/): PUBLIC_DOMAIN, POSTGRES_PASSWORD, AZURE_BACKUP_CONTAINER, *_MEM_LIMIT
-PHONE_HASH_PEPPER=change-me
+# (./install.sh sets ENV=prod, PUBLIC_BASE_URL, DATABASE_URL, AZURE_PUBLIC_BLOB_ENDPOINT and generates the secrets)
+PHONE_HASH_PEPPER=change-me          # random, set once, NEVER rotate on a live database (part of the phone hashes)
 AZURE_STORAGE_CONNECTION_STRING=
 AZURE_UPLOADS_CONTAINER=uploads
 AZURE_ARTIFACTS_CONTAINER=artifacts
@@ -208,22 +230,30 @@ UNIT_SECONDS=180
 FREE_REVISIONS_PER_JOB=2
 REVISION_COST_UNITS=1
 MAX_ACTIVE_JOBS_PER_USER=2
+MAX_BROLL_SOURCES_PER_JOB=4
+BROLL_SURCHARGE_UNITS=1
 GEMINI_API_KEY=
 GEMINI_ANALYSIS_MODEL=
 GEMINI_PLANNER_MODEL=
 GEMINI_ANALYSIS_FPS=1
 GEMINI_ANALYSIS_FPS_LONG=0.5
 GEMINI_MEDIA_RESOLUTION=low
+LLM_PROVIDER=gemini                 # or azure: then AZURE_OPENAI_API_KEY / _ENDPOINT / AZURE_ANALYSIS_DEPLOYMENT / AZURE_PLANNER_DEPLOYMENT
 LLM_MAX_CONCURRENCY=2
 ANALYSIS_CHUNK_SEC=600
 LONG_VIDEO_THRESHOLD_SEC=1200
 STT_PROVIDER=groq
 GROQ_API_KEY=
 GROQ_STT_MODEL=whisper-large-v3-turbo
+                                    # STT_PROVIDER=azure needs AZURE_SPEECH_API_KEY, AZURE_SPEECH_ENDPOINT, AZURE_SPEECH_LOCALES=uz-UZ,ru-RU
+STT_CONCURRENCY=3
 WORKER_CONCURRENCY=1
 JOB_TIMEOUT_SEC=14400
 RENDER_PRESET=veryfast
 RENDER_CRF=21
+RENDER_CLIP_CONCURRENCY=2
+RENDER_STABILIZE=false              # ffmpeg deshake: ~2x slower clips, can fight deliberate pans
+DELIVER_MAX_INLINE_BYTES=1900000000
 TMP_DIR=/tmp/montaj
 ASSETS_DIR=/app/assets
 PRICE_GEMINI_IN_PER_M_USD=0.30
@@ -253,5 +283,6 @@ User videos are private: never used for anything except producing the user's res
 - Telegram send failures: retry 3 times; then fall back to a download link.
 
 ## 17. Roadmap (after MVP, NOT now)
-Payme/Click · voice-message feedback · in-chat small file upload · face-tracking reframe · animated zoom · xfade transitions ·
-b-roll library · priority queue for Max tariff · preview render (480p) · managed identity for Blob · multi-worker scaling.
+Payme/Click · voice-message feedback · in-chat small file upload · face-tracking reframe · stock b-roll library ·
+detach/remove an attached B-roll · validated stabilisation (vidstab) · faster render · priority queue for Max tariff ·
+preview render (480p) · managed identity for Blob · multi-worker scaling.

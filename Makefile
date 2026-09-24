@@ -1,7 +1,10 @@
-.PHONY: up down logs test test-js lint fmt migrate revision
+.PHONY: up down logs test test-js test-install lint fmt migrate revision
 
 test-js:
 	node --test "tests/js/*.test.mjs"
+
+test-install:
+	bash tests/shell/test_install.sh "$(CURDIR)"
 
 up:
 	docker compose up -d db redis azurite api

@@ -30,6 +30,13 @@
 - [ ] Music, when on, doesn't drown out speech (ducking works) and fades out before the video ends, not mid-note.
 - [ ] Output plays correctly in Telegram's in-app player AND when downloaded and opened elsewhere (faststart, correct pixel format).
 - [ ] Reframed 9:16 output keeps the speaker's face in frame throughout, not just at the start.
+- [ ] A portrait phone video (iPhone/Android) uploaded in "Original" format comes out portrait, upright, uncropped.
+- [ ] An iPhone HDR (HLG) clip looks like the phone's own preview: not washed out, not dark, highlights not blown.
+- [ ] A round Telegram video note shows a clean full-width picture: no circle, no white/black corner box, no artefacts at the edges.
+- [ ] Cuts inside one continuous take are invisible (no dissolve/stutter); dissolves appear only where the story jumps.
+- [ ] Text overlays (title, CTA) never sit on top of or crowd the subtitles.
+- [ ] B-roll: attach 2 clips to a talking video; the picture cuts to them while the voice continues without a gap, repeat or skipped word.
+- [ ] A long plan (15+ clips) renders without the worker being killed (`docker stats` peak stays well below `WORKER_MEM_LIMIT`).
 
 ## Delivery and reliability
 - [ ] A ~1 GB finished video is delivered through the bot itself (not just a link) via the local Bot API server.

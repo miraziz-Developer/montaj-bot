@@ -3,9 +3,12 @@
 The `EditPlan` is the ONLY contract between the AI planner and the renderer. The LLM produces JSON that must validate
 against this schema. The renderer trusts only validated plans.
 
-Time bases: `clip.src_in/src_out` = seconds in the SOURCE video. `overlay.start/end` = seconds in the OUTPUT timeline.
+Time bases: `clip.src_in/src_out` = seconds in the clip's SOURCE video (`clip.source_id`: `"primary"` = the job's main
+upload, `"broll_N"` = an attached B-roll upload). `overlay.start/end` = seconds in the OUTPUT timeline.
+Source geometry everywhere (planner input, output sizing, reframing) is DISPLAY geometry: rotation flags and non-square
+pixels are already applied by `probe()`.
 
-## 1. Pydantic models (copy to `app/schemas/edit_plan.py`)
+## 1. Pydantic models (the real code is `app/schemas/edit_plan.py`; keep this in sync)
 ```python
 from __future__ import annotations
 
@@ -31,21 +34,37 @@ class Reframe(BaseModel):
     )
     focus_x: float = Field(0.5, ge=0.0, le=1.0)  # center of interest, 0..1 of source width
     focus_y: float = Field(0.5, ge=0.0, le=1.0)
-    zoom: float = Field(1.0, ge=1.0, le=1.6)  # STATIC zoom for the whole clip (no animation in MVP)
+    zoom: float = Field(1.0, ge=1.0, le=1.6)  # start zoom; "fill" also pushes in ~8% (Ken Burns)
 
 
 class ClipAudio(BaseModel):
     volume: float = Field(1.0, ge=0.0, le=2.0)
     mute: bool = False
+    # B-roll dub: "primary" takes this clip's audio from the job's PRIMARY source at primary_src_in/out, so the
+    # narration keeps playing under a (silent, picture-only) B-roll clip. Required window when source == "primary".
+    source: Literal["own", "primary"] = "own"
+    primary_src_in: float | None = Field(None, ge=0.0)
+    primary_src_out: float | None = Field(None, gt=0.0)
+
+    @model_validator(mode="after")
+    def _primary_window(self) -> "ClipAudio":
+        if self.source == "primary":
+            if self.primary_src_in is None or self.primary_src_out is None:
+                raise ValueError("audio.source 'primary' needs primary_src_in and primary_src_out")
+            if self.primary_src_out <= self.primary_src_in:
+                raise ValueError("primary_src_out must be after primary_src_in")
+        return self
 
 
 class Transition(BaseModel):
-    type: Literal["cut", "crossfade", "fade_black"] = "cut"  # MVP renderer treats everything as "cut"
+    # cut = hard cut; crossfade = short plain cross-dissolve; fade_black = dip to black. Applied to the cut INTO this clip.
+    type: Literal["cut", "crossfade", "fade_black"] = "cut"
     duration: float = Field(0.0, ge=0.0, le=1.0)
 
 
 class Clip(BaseModel):
     id: str = Field(min_length=1, max_length=16)
+    source_id: str = Field("primary", min_length=1, max_length=16)  # "primary" or a broll_sources id
     src_in: float = Field(ge=0.0)
     src_out: float = Field(gt=0.0)
     speed: float = Field(1.0, ge=0.5, le=2.0)
@@ -174,17 +193,25 @@ both dimensions even. In "light mode" (long videos) and for `RENDER_PRESET=ultra
 ## 4. Deterministic post-processing of an LLM plan (order matters)
 1. Parse + Pydantic validation (retry the LLM up to 2 times, feeding back the validation error text).
 2. `force_job_settings`: set `target.aspect` = job.aspect, `style_preset` = job.style_preset, watermark on for trial jobs,
-   captions disabled if the transcript has no words.
-3. `snap.snap_cuts(plan, transcript, silences)`: move every `src_in`/`src_out` to the nearest safe point within +-0.35 s:
-   prefer the middle of a silence gap; else a word boundary (`src_in` -> word.start - 0.05, `src_out` -> word.end + 0.08);
-   never cut inside a word. Keep `src_out - src_in >= 0.3`.
-4. `presets.apply_rhythm(plan, transcript, preset)`: split clips longer than `max_shot_sec` at the best sentence/pause boundary
-   (>= 1.0 s from clip edges), then assign `reframe.zoom` alternating through `zoom_levels` (skip if source is 16:9 -> 16:9 and
-   preset is clean_talk/vlog_story). New clip ids: `c{n}` renumbered sequentially.
-5. `plan_validator.validate_plan(plan, source_duration, preset, music_ids)` returns a list of errors; small issues are auto-fixed
-   (clamp to source range, drop clips < 0.3 s, unknown music track -> music disabled, overlays clamped to total duration).
-   Hard errors: overlapping source ranges (> 0.05 s) between two clips (except vlog_story never reorders), total duration
-   > source_duration * 1.05, zero clips. Hard error -> fallback planner.
+   captions disabled if the transcript has no words. An overlay sitting in the captions' screen zone is moved to the opposite
+   side (two texts in one zone look cluttered).
+3. `snap.snap_cuts(plan, transcript, silences)`: move every PRIMARY-source `src_in`/`src_out` to the nearest safe point within
+   +-0.35 s: prefer the middle of a silence gap; else a word boundary (`src_in` -> word.start - 0.05, `src_out` -> word.end + 0.08);
+   never cut inside a word. Keep `src_out - src_in >= 0.3`. B-roll clips are left untouched (the transcript is timed against the
+   primary file only); overlap undoing is done per `source_id`.
+4. `plan_validator.apply_rhythm(plan, transcript, preset, source_width, source_height)`: split PRIMARY clips longer than `max_shot_sec`
+   at the best sentence/pause boundary (>= 1.0 s from clip edges), then assign `reframe.zoom` alternating through `zoom_levels`
+   (skip if source is 16:9 -> 16:9 and preset is clean_talk/vlog_story). A small square source (a Telegram round video note,
+   `probe.looks_like_round_video_note`) is forced to `fit_blur` instead. Then every REAL editorial cut gets
+   `transition_in = crossfade(preset.crossfade_sec)`; a cut inside one continuous take (next clip starts where the previous ended,
+   same source and speed) or at a voice-continuous B-roll boundary stays a hard cut (a dissolve there swallows content).
+   New clip ids: `c{n}` renumbered sequentially.
+5. `plan_validator.validate_plan(plan, source_duration, preset, music_ids, broll_durations)` returns a list of errors; small issues
+   are auto-fixed (clamp to the clip's own source range, drop clips < 0.3 s, unknown music track -> music disabled, overlays clamped
+   to total duration, an invalid `audio.primary_src_*` window clamps or falls back to a muted clip).
+   Hard errors: a clip whose `source_id` is not `primary`/a known B-roll, overlapping ranges (> 0.05 s) between two clips OF THE SAME
+   source (vlog_story never reorders; with B-roll present the chronological sort is skipped), total duration
+   > (primary + B-roll durations) * 1.05, zero clips. Hard error -> fallback planner.
 
 ## 5. Fallback planner (no LLM, always works)
 Keep speech, remove silent gaps > `remove_gap_sec` (keep `pad_sec`), merge tiny fragments, apply rhythm, captions on
@@ -195,6 +222,15 @@ nothing extra. If the source has no speech at all: keep the whole video in scene
 Common: `ffmpeg -y -hide_banner -loglevel error`. `W x H` = output resolution (section 2). `fps` = plan.target.fps.
 
 ### Stage A — one file per clip (`clip_0001.mp4`, ...)
+Implemented in `render/clip_stage.py` (this section describes the contract; that file has the exact filters). Per source, `engine.py`
+probes once and passes `hdr`, `sar`, `round_note` to every clip. Filters that run BEFORE reframing, in this order:
+HDR (PQ/HLG) -> SDR BT.709 tone-map (`zscale npl=203` + `mobius`, calibrated on real signal levels: the common `npl=100` + `hable`
+recipe renders diffuse white visibly dark) · SAR -> square pixels · optional `deshake` (`RENDER_STABILIZE`, off) · light colour polish
+(`eq` contrast/saturation + luma-only `unsharp`). `fill` clips also get the slow Ken Burns push-in (crop window shrinks ~8% over the
+clip). `fit_blur` on a round video note first crops the largest square inside the circle (`0.68 * min(w,h)`), so the baked-in mask
+corners never show, then shows it full-width over a darkened blur of itself. Audio ends with `apad` (never underruns the video);
+`audio.source = "primary"` maps the audio of a SECOND input (the primary file, `-ss primary_src_in -t ...`) instead of the clip's own.
+The recipe below is the original minimal form:
 Input seeking + re-encode for accuracy:
 ```
 ffmpeg ... -ss {src_in} -t {src_dur} -i SOURCE [-f lavfi -i anullsrc=r=48000:cl=stereo   # ONLY if source has no audio]
@@ -214,10 +250,17 @@ ffmpeg ... -ss {src_in} -t {src_dur} -i SOURCE [-f lavfi -i anullsrc=r=48000:cl=
   and map `[v]`. (In overlay expressions write `W`,`H`,`w`,`h` literally: they are ffmpeg variables, not Python.)
   If the source aspect already equals the target aspect, `fill` with zoom 1.0 is just a scale.
 
-### Stage B — join
-Write `list.txt` with lines `file 'clip_0001.mp4'` (paths relative, no quotes inside names) then:
-`ffmpeg ... -f concat -safe 0 -i list.txt -c copy joined.mp4`
-(All clips share codec/resolution/fps/audio params, so `-c copy` is valid.) MVP ignores non-"cut" transitions.
+### Stage B — join (`render/concat_stage.py`)
+All-cut plans: write `list.txt` with lines `file 'clip_0001.mp4'` (paths relative, no quotes inside names) then
+`ffmpeg ... -f concat -safe 0 -i list.txt -c copy joined.mp4` (all clips share codec/resolution/fps/audio params, so `-c copy` is valid).
+As soon as one clip has a `crossfade`/`fade_black` transition with duration > 0, the join is a `filter_complex` of `xfade` +
+`acrossfade` (`crossfade` = xfade `fade`, a plain cross-dissolve; `fade_black` = `fadeblack`) and hard cuts as `concat` pairs.
+Rules that keep it correct (each has a real-ffmpeg test):
+- offsets come from the PROBED durations of the rendered clip files, not the plan; overlap = min(duration, both neighbours);
+- every video input first gets `settb=AVTB`: `concat` outputs timebase 1/1000000 and mp4 inputs 1/15360, and `xfade` refuses mixed timebases;
+- ffmpeg opens every input at once, so at most `MAX_XFADE_INPUTS = 5` inputs are joined per graph: groups first (near-lossless
+  intermediates), then the group files with the group's FIRST clip's `transition_in` - the timeline math equals one flat chain,
+  and peak memory stays about 1 GB regardless of clip count.
 
 ### Stage C — captions/overlays/watermark burn-in + music + loudness
 Create `captions.ass` (section 7). Copy or symlink `ASSETS_DIR/fonts` to `workdir/fonts`.
