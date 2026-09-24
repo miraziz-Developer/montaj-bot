@@ -22,7 +22,7 @@ out="$(./install.sh --check 2>&1)"; rc=$?
 pw="$(get POSTGRES_PASSWORD)"; pep="$(get PHONE_HASH_PEPPER)"
 
 echo "2) fill the required values, re-run"
-set_ BOT_TOKEN 123456:TEST; set_ PUBLIC_DOMAIN bot.example.com; set_ TELEGRAM_API_ID 12345; set_ TELEGRAM_API_HASH abc
+set_ BOT_TOKEN 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw; set_ PUBLIC_DOMAIN bot.example.com; set_ TELEGRAM_API_ID 12345; set_ TELEGRAM_API_HASH abc
 set_ AZURE_STORAGE_CONNECTION_STRING 'DefaultEndpointsProtocol=https;AccountName=montajprod1;AccountKey=SECRET==;EndpointSuffix=core.windows.net'
 set_ GEMINI_API_KEY k; set_ GEMINI_ANALYSIS_MODEL m1; set_ GEMINI_PLANNER_MODEL m2; set_ GROQ_API_KEY g
 out="$(./install.sh --check 2>&1)"; rc=$?
@@ -33,6 +33,10 @@ out="$(./install.sh --check 2>&1)"; rc=$?
 [[ "$(get AZURE_STORAGE_CONNECTION_STRING)" == *"AccountKey=SECRET==;EndpointSuffix"* ]] && ok "connection string with ';' and '=' survived intact" || bad "connection string mangled"
 
 echo "3) error handling"
+set_ BOT_TOKEN 123456:TEST
+out="$(./install.sh --check 2>&1)"; rc=$?
+[[ $rc -ne 0 && "$out" == *"does not look like a Telegram bot token"* ]] && ok "rejects a malformed BOT_TOKEN" || bad "malformed token accepted (rc=$rc)"
+set_ BOT_TOKEN 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw
 set_ PUBLIC_DOMAIN https://bot.example.com/
 out="$(./install.sh --check 2>&1)"; rc=$?
 [[ $rc -ne 0 && "$out" == *"bare host name"* ]] && ok "rejects a URL in PUBLIC_DOMAIN" || bad "accepted a URL (rc=$rc)"

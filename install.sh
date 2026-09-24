@@ -137,6 +137,8 @@ HINT
   exit 2
 fi
 
+[[ "$(env_get BOT_TOKEN)" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{30,}$ ]] ||
+  die "BOT_TOKEN does not look like a Telegram bot token (123456789:AAAA...): copy it again from @BotFather"
 [[ -n "$(env_get ADMIN_TELEGRAM_IDS)" ]] || warn "ADMIN_TELEGRAM_IDS is empty: nobody can use the admin/payment-approval commands"
 [[ -n "$(env_get PAYMENT_CARD_TEXT)" ]] || warn "PAYMENT_CARD_TEXT is empty: users will not see where to pay"
 
@@ -167,15 +169,15 @@ elif [[ -n "$MY_IP" && "$DOMAIN_IP" != "$MY_IP" ]]; then
   warn "DNS: $DOMAIN -> $DOMAIN_IP but this server's public IP is $MY_IP; fix the A record or HTTPS will fail"
 fi
 
-TOKEN="$(env_get BOT_TOKEN)"
-RESP="$(curl -sS --max-time 10 "https://api.telegram.org/bot${TOKEN}/getMe" 2>/dev/null || true)"
-if [[ -z "$RESP" ]]; then
-  warn "could not reach api.telegram.org to verify BOT_TOKEN (continuing)"
-elif [[ "$RESP" != *'"ok":true'* ]]; then
-  die "Telegram rejected BOT_TOKEN: create or rotate it in @BotFather"
-elif [[ -z "$(env_get BOT_USERNAME)" ]]; then
-  BOT_NAME="$(sed -n 's/.*"username":"\([^"]*\)".*/\1/p' <<<"$RESP")"
-  [[ -z "$BOT_NAME" ]] || { env_set BOT_USERNAME "$BOT_NAME"; say "BOT_USERNAME=$BOT_NAME"; }
+# Best effort only: read BOT_USERNAME from the public Bot API. A bot that is already served by the LOCAL Bot API
+# server is logged out of the public one, so a rejection here proves nothing (the token is verified against the
+# local server after the start, below).
+if [[ -z "$(env_get BOT_USERNAME)" ]]; then
+  RESP="$(curl -sS --max-time 10 "https://api.telegram.org/bot$(env_get BOT_TOKEN)/getMe" 2>/dev/null || true)"
+  if [[ "$RESP" == *'"ok":true'* ]]; then
+    BOT_NAME="$(sed -n 's/.*"username":"\([^"]*\)".*/\1/p' <<<"$RESP")"
+    [[ -z "$BOT_NAME" ]] || { env_set BOT_USERNAME "$BOT_NAME"; say "BOT_USERNAME=$BOT_NAME"; }
+  fi
 fi
 
 # ---------- 3. Docker ----------
@@ -220,7 +222,24 @@ if ((WITH_BACKUP)); then
   say "nightly database backup installed (03:15, 14 local copies + Azure Blob '$(env_get AZURE_BACKUP_CONTAINER)')"
 fi
 
-# ---------- 6. verify from the outside ----------
+# ---------- 6. verify: bot token against the LOCAL Bot API server, then HTTPS from the outside ----------
+
+say "checking BOT_TOKEN against the local Telegram Bot API server"
+read -r -d '' TOKEN_CHECK <<'PY' || true
+import os, urllib.request
+try:
+    url = f"http://telegram-bot-api:8081/bot{os.environ['BOT_TOKEN']}/getMe"
+    print(urllib.request.urlopen(url, timeout=20).read().decode())
+except Exception as exc:  # HTTPError bodies carry Telegram's description
+    print("ERR", getattr(exc, "code", ""), getattr(exc, "read", lambda: b"")().decode(errors="replace")[:200] or exc)
+PY
+TG="$(docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml exec -T api python -c "$TOKEN_CHECK" 2>&1 || true)"
+if [[ "$TG" == *'"ok":true'* ]]; then
+  say "Telegram accepted the token (@$(sed -n 's/.*"username":"\([^"]*\)".*/\1/p' <<<"$TG"))"
+else
+  warn "the local Bot API server did not accept BOT_TOKEN yet: $(tr -d '\n' <<<"$TG" | cut -c1-200)"
+  warn "wrong token? Or the bot is still registered on the public API: run  curl https://api.telegram.org/bot<TOKEN>/logOut  once, wait ~10 min, re-run ./install.sh"
+fi
 
 say "waiting for https://${DOMAIN}/health (the first start issues the certificate: up to ~2 minutes)"
 OK=0
