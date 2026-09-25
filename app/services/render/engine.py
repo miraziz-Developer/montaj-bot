@@ -135,7 +135,7 @@ async def render_plan(
         music_path = resolve_music_track(plan.music.track_id, assets_dir) if plan.music.enabled else None
         await render_final(
             joined=joined, ass_path=ass_path, music_path=music_path, plan=plan,
-            target_w=width, target_h=height, out_path=out_path, fonts_dir=fonts_dir,
+            target_w=width, target_h=height, out_path=out_path, fonts_dir=fonts_dir, assets_dir=assets_dir,
         )  # fmt: skip
         logger.info(
             "render stages clips=%.1fs join=%.1fs final=%.1fs (%d clips)",

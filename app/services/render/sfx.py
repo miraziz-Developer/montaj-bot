@@ -46,6 +46,9 @@ def plan_cues(plan: EditPlan) -> list[SfxCue]:
     for overlay in plan.overlays:
         if overlay.start < total:
             candidates.append((overlay.start, "pop", True))
+    for sticker in plan.stickers:
+        if sticker.start < total:
+            candidates.append((sticker.start, "pop", True))
     candidates.sort()
 
     cues: list[SfxCue] = []

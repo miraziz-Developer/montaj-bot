@@ -9,7 +9,16 @@ from collections.abc import Collection, Sequence
 
 from pydantic import ValidationError
 
-from app.schemas.edit_plan import Captions, Clip, ClipAudio, EditPlan, TextOverlay, Transition, Watermark
+from app.schemas.edit_plan import (
+    Captions,
+    Clip,
+    ClipAudio,
+    EditPlan,
+    Sticker,
+    TextOverlay,
+    Transition,
+    Watermark,
+)
 from app.services.ai.presets import PresetRules
 from app.services.media.probe import looks_like_round_video_note
 from app.services.stt.base import Transcript
@@ -20,6 +29,8 @@ MIN_CLIP_SEC = 0.3
 OVERLAP_TOLERANCE_SEC = 0.05
 DURATION_SLACK = 1.05
 MAX_OVERLAYS = 3
+MAX_STICKERS = 4
+MIN_STICKER_SEC = 0.5
 MIN_SPLIT_EDGE_SEC = 1.0  # a rhythm split stays at least this far from the clip edges
 MIN_PAUSE_SEC = 0.15
 DEFAULT_WATERMARK_TEXT = "Montaj Bot"
@@ -51,6 +62,7 @@ def force_job_settings(
             "watermark": watermark,
             "captions": captions,
             "overlays": [_dodge_captions(o, captions) for o in plan.overlays],
+            "stickers": [_sticker_clear_of_captions(s, captions) for s in plan.stickers],
         }
     )
 
@@ -64,6 +76,29 @@ def _dodge_captions(overlay: TextOverlay, captions: Captions) -> TextOverlay:
     if overlay.position != captions_zone:
         return overlay
     return overlay.model_copy(update={"position": "top" if captions_zone != "top" else "bottom"})
+
+
+def _sticker_clear_of_captions(sticker: Sticker, captions: Captions) -> Sticker:
+    """Stickers sit at the sides, at the top or middle band; captions in that band push them to the other."""
+    if not captions.enabled or captions.position not in ("top", "middle"):
+        return sticker
+    band, other = ("top", "middle") if captions.position == "top" else ("middle", "top")
+    if not sticker.position.startswith(band):
+        return sticker
+    return sticker.model_copy(update={"position": sticker.position.replace(band, other)})
+
+
+def _usable_stickers(stickers: Sequence[Sticker], total: float) -> list[Sticker]:
+    """Inside the video, at most MAX_STICKERS, never two at the same spot at the same time."""
+    kept: list[Sticker] = []
+    for sticker in sorted(stickers, key=lambda s: s.start):
+        end = min(sticker.end, total)
+        if end - sticker.start < MIN_STICKER_SEC:
+            continue
+        if any(k.position == sticker.position and sticker.start < k.end for k in kept):
+            continue
+        kept.append(sticker.model_copy(update={"end": end}))
+    return kept[:MAX_STICKERS]
 
 
 # ---------- rhythm ----------
@@ -282,7 +317,10 @@ def validate_plan(
             overlays.append(overlay.model_copy(update={"end": end}))
     overlays = overlays[:MAX_OVERLAYS]
 
-    fixed = renumber(plan.model_copy(update={"clips": clips, "music": music, "overlays": overlays}))
+    stickers = _usable_stickers(plan.stickers, total)
+    fixed = renumber(
+        plan.model_copy(update={"clips": clips, "music": music, "overlays": overlays, "stickers": stickers})
+    )
     if errors:
         return fixed, errors
     try:

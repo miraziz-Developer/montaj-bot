@@ -6,7 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.services.render.looks import Look
+from app.services.render.looks import LOOKS, Look
+from app.services.render.stickers import STICKERS
 
 Aspect = Literal["9:16", "16:9", "1:1", "original"]
 StylePreset = Literal["dynamic_reels", "clean_talk", "ad_commercial", "vlog_story"]
@@ -147,6 +148,20 @@ class TextOverlay(BaseModel):
         return self
 
 
+class Sticker(BaseModel):
+    emoji: str  # a name from render/stickers.py STICKERS (unknown names are dropped by EditPlan)
+    start: float = Field(ge=0.0)
+    end: float = Field(gt=0.0)
+    position: Literal["top_left", "top_right", "middle_left", "middle_right"] = "top_right"
+    size_pct: float = Field(16.0, ge=8.0, le=30.0)  # of the output width
+
+    @model_validator(mode="after")
+    def _order(self) -> Sticker:
+        if self.end - self.start < 0.3:
+            raise ValueError("sticker shorter than 0.3 s")
+        return self
+
+
 class Watermark(BaseModel):
     enabled: bool = False
     text: str = Field("", max_length=40)
@@ -176,9 +191,23 @@ class EditPlan(BaseModel):
     look: Look = "natural"
     sfx: Sfx = Field(default_factory=Sfx)
     overlays: list[TextOverlay] = Field(default_factory=list, max_length=6)
+    stickers: list[Sticker] = Field(default_factory=list, max_length=8)
     watermark: Watermark = Field(default_factory=Watermark)
     export: Export = Field(default_factory=Export)
     human_summary_uz: str = Field("", max_length=1200)
+
+    @field_validator("look", mode="before")
+    @classmethod
+    def _known_look(cls, v: object) -> object:
+        return v if v in LOOKS else "natural"  # an unknown look name must not sink the whole plan
+
+    @field_validator("stickers", mode="before")
+    @classmethod
+    def _known_stickers(cls, v: object) -> object:
+        if not isinstance(v, list):
+            return v
+        known = [s for s in v if not isinstance(s, dict) or s.get("emoji") in STICKERS]
+        return known[:8]
 
     @model_validator(mode="after")
     def _unique_ids(self) -> EditPlan:

@@ -8,6 +8,7 @@ from app.schemas.edit_plan import EditPlan
 from app.services.media.ffmpeg import FFmpegError, run_ffmpeg
 from app.services.render.looks import look_filter
 from app.services.render.sfx import SfxCue, plan_cues, sfx_graph
+from app.services.render.stickers import PlacedSticker, sticker_file, sticker_graph, sticker_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,37 @@ def _relative(path: Path, cwd: Path) -> str:
         return str(path.resolve())
 
 
-def _video_graph(ass_path: Path | None, fonts_dir: Path, cwd: Path, look: str = "natural") -> str:
+def place_stickers(plan: EditPlan, assets_dir: Path | None, target_w: int) -> list[PlacedSticker]:
+    """The plan's stickers resolved to files (missing files are skipped, never fatal)."""
+    if assets_dir is None:
+        return []
+    placed = []
+    total = plan.total_duration()
+    for sticker in plan.stickers:
+        path = sticker_file(assets_dir, sticker.emoji)
+        if path is None or sticker.start >= total:
+            logger.warning("sticker %r skipped: no image or outside the video", sticker.emoji)
+            continue
+        size = max(16, round(target_w * sticker.size_pct / 100 / 2) * 2)
+        placed.append(PlacedSticker(path, sticker.start, min(sticker.end, total), sticker.position, size))
+    return placed
+
+
+def _video_graph(
+    ass_path: Path | None,
+    fonts_dir: Path,
+    cwd: Path,
+    look: str = "natural",
+    *,
+    stickers: list[PlacedSticker] | None = None,
+    first_sticker_input: int = 1,
+    size: tuple[int, int] = (0, 0),
+) -> str:
     grade = look_filter(look)
+    if stickers:  # look -> stickers -> text on top (captions stay readable over a sticker)
+        text = _video_graph(ass_path, fonts_dir, cwd).removeprefix("[0:v]").removesuffix("[v]")
+        body = sticker_graph(stickers, first_sticker_input, "g", "gs", *size)
+        return f"[0:v]{grade or 'null'}[g];{body};[gs]{text}[v]"
     if ass_path is None:
         return f"[0:v]{grade or 'null'}[v]"
     options = f"filename={escape_filter_value(_relative(ass_path, cwd))}"
@@ -110,13 +140,18 @@ async def render_final(
     target_h: int,
     out_path: Path,
     fonts_dir: Path,
+    assets_dir: Path | None = None,
     timeout: float = 3600,
 ) -> None:
     """Burn subtitles in (when there is an ASS file), mix music (ducked under speech), normalise loudness."""
     cwd = (ass_path or out_path).parent
-    video = _video_graph(ass_path, fonts_dir, cwd, plan.look)
-    cues = plan_cues(plan)
     music = music_path is not None and plan.music.enabled
+    stickers = place_stickers(plan, assets_dir, target_w)
+    video = _video_graph(
+        ass_path, fonts_dir, cwd, plan.look,
+        stickers=stickers, first_sticker_input=2 if music else 1, size=(target_w, target_h),
+    )  # fmt: skip
+    cues = plan_cues(plan)
     silent = not music and await audio_is_silent(joined)  # a music mix always has signal
     if silent:
         logger.info("joined audio is silent: skipping loudness normalisation")
@@ -129,6 +164,7 @@ async def render_final(
         args = ["-y", "-loglevel", "error", "-i", str(joined)]
         if music:
             args += ["-stream_loop", "-1", "-i", str(music_path)]
+        args += sticker_inputs(stickers, plan.target.fps)
         args += ["-filter_complex", graph, "-map", "[v]", "-map", "[a]"]
         args += [
             "-c:v", "libx264", "-preset", plan.export.preset, "-crf", str(plan.export.crf),

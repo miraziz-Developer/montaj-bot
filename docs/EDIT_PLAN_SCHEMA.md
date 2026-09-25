@@ -171,6 +171,7 @@ class EditPlan(BaseModel):
     look: Literal["natural", "warm", "cool", "cinematic", "vivid", "bw", "vintage"] = "natural"
     sfx: Sfx = Field(default_factory=Sfx)
     overlays: list[TextOverlay] = Field(default_factory=list, max_length=6)
+    stickers: list[Sticker] = Field(default_factory=list, max_length=8)  # emoji names from render/stickers.py
     watermark: Watermark = Field(default_factory=Watermark)
     export: Export = Field(default_factory=Export)
     human_summary_uz: str = Field("", max_length=1200)
@@ -297,6 +298,12 @@ Without ducking: drop the sidechain and mix `[m]` with `[0:a]` directly. Add `-t
 
 **Look.** `plan.look` names one fixed colour grade from `render/looks.py` (colorbalance/curves/eq/vignette chains written
 in code, never by the AI); it runs in front of `ass` so text keeps its exact colours. `natural` = no filter.
+
+**Stickers** (`render/stickers.py`). `plan.stickers[]` names emoji from a fixed catalog (Noto Emoji PNGs in
+`assets/emoji`, Apache-2.0); unknown names are dropped by the schema, the validator keeps at most 4 inside the video,
+never two at the same spot at once, and `force_job_settings` moves them out of the caption band. Each is an extra
+`-loop 1 -t {dur} -i png` input: `format=rgba,scale=(bounce: 0.35 -> 1.15 -> 1.0 in 0.22 s, eval=frame),fade out,
+setpts=PTS+start/TB` overlaid at the side (`top_*` at 20% height, `middle_*` at 45%) - order: look -> stickers -> ASS text.
 
 **Sound effects** (`render/sfx.py`, when `plan.sfx.enabled`). Synthesised by ffmpeg (`anoisesrc` whoosh, `aevalsrc` pop) -
 no sample files, nothing to license. Placement is code: a whoosh whose swell peaks on each *structural* cut (non-cut

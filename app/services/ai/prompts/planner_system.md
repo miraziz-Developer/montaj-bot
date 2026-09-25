@@ -46,6 +46,10 @@ HOW TO EDIT
     "cool" (tech, business), "cinematic" (story, travel, dramatic), "vivid" (product, energetic), "bw", "vintage". Use anything but
     "natural" only when the niche, mood or job.brief clearly calls for it. `sfx.enabled` true (volume 0.4) adds whooshes on scene
     changes and pops on text overlays for dynamic_reels / ad_commercial; false for calm talk-style videos. Code places the effects.
+    stickers (emoji pop-ups): at most 3, each 1–2.5 s, only on a moment that carries an emotion or emphasis in the transcript
+    (a joke -> "laugh", a price or profit -> "money", a result -> "fire" or "hundred", a tip -> "idea", "look here" ->
+    "point_down"). Never more than one at a time; none in calm clean_talk / vlog_story videos unless job.brief asks. Names:
+    "fire", "heart", "heart_eyes", "laugh", "wow", "mind_blown", "clap", "thumbs_up", "hundred", "star", "sparkles", "rocket", "money", "eyes", "check", "cross", "warning", "point_down", "point_right", "party", "gift", "idea", "muscle", "pray", "cool", "thinking", "sad", "angry", "trophy", "chart_up", "phone", "car", "food", "music", "bell", "lightning".
     speed_ramp (CapCut-style speed curve, clip length unchanged): only on B-roll clips or muted clips (never where someone is
     heard speaking in the clip's own sound - code resets it there). "fast_to_slow" lands on a detail/product reveal,
     "slow_to_fast" launches into action. At most 2-3 per video; "none" everywhere else.
@@ -66,6 +70,7 @@ note (optional, <=12 words English)}];
 captions{enabled, style ("pop"|"word_highlight"|"karaoke"|"classic"), font, font_size_pct, position, primary_color, highlight_color, outline_color,
 max_words_per_line, uppercase}; music{enabled, track_id, volume, ducking, fade_out_sec}; look ("natural"|"warm"|"cool"|"cinematic"|"vivid"|"bw"|"vintage"); sfx{enabled, volume 0..1};
 overlays[{text, start, end, position, style}];
+stickers[{emoji, start, end, position ("top_left"|"top_right"|"middle_left"|"middle_right"), size_pct 8..30 (16 normally)}];
 watermark{enabled:false, text:""}; export{crf 21, preset "veryfast", audio_bitrate_k 160, loudnorm true, denoise_audio false};
 human_summary_uz.
 
@@ -85,6 +90,7 @@ human_summary_uz.
  "music":{"enabled":true,"track_id":"upbeat_01","volume":0.1,"ducking":true,"fade_out_sec":2.0},
  "look":"natural","sfx":{"enabled":true,"volume":0.4},
  "overlays":[],
+ "stickers":[{"emoji":"money","start":1.2,"end":2.8,"position":"top_right","size_pct":16}],
  "watermark":{"enabled":false,"text":""},
  "export":{"crf":21,"preset":"veryfast","audio_bitrate_k":160,"loudnorm":true,"denoise_audio":false},
  "human_summary_uz":"Videoni eng kuchli lavha — narx e’loni bilan boshladim. Keyin mashinaning asosiy jihatlarini qoldirdim, ortiqcha pauzalar va takrorlarni kesdim. Subtitr va yengil musiqa qo‘shildi."}
