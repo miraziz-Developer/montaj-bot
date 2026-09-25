@@ -6,10 +6,14 @@ from pathlib import Path
 
 from app.schemas.edit_plan import EditPlan
 from app.services.media.ffmpeg import FFmpegError, run_ffmpeg
+from app.services.render.looks import look_filter
+from app.services.render.sfx import SfxCue, plan_cues, sfx_graph
 
 logger = logging.getLogger(__name__)
 
 LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11"
+# after the effects are added on top of the normalised voice: catch their peaks (-1.5 dBFS), no auto-gain
+SFX_LIMITER = "alimiter=limit=0.84:level=0"
 # Substrings of ffmpeg errors that mean "this ffmpeg build lacks a filter/option we use for the music mix".
 _UNSUPPORTED_HINTS = ("sidechaincompress", "normalize", "No such filter", "Option not found")
 
@@ -28,13 +32,14 @@ def _relative(path: Path, cwd: Path) -> str:
         return str(path.resolve())
 
 
-def _video_graph(ass_path: Path | None, fonts_dir: Path, cwd: Path) -> str:
+def _video_graph(ass_path: Path | None, fonts_dir: Path, cwd: Path, look: str = "natural") -> str:
+    grade = look_filter(look)
     if ass_path is None:
-        return "[0:v]null[v]"
+        return f"[0:v]{grade or 'null'}[v]"
     options = f"filename={escape_filter_value(_relative(ass_path, cwd))}"
     if fonts_dir.is_dir():
         options += f":fontsdir={escape_filter_value(_relative(fonts_dir, cwd))}"
-    return f"[0:v]ass={options}[v]"
+    return f"[0:v]{grade + ',' if grade else ''}ass={options}[v]"
 
 
 SILENCE_MAX_VOLUME_DB = -70.0
@@ -61,8 +66,20 @@ def _loudness(plan: EditPlan, *, skip_loudnorm: bool = False) -> str:
 
 
 def _audio_graph(
-    plan: EditPlan, music: bool, *, ducking: bool, normalize_off: bool, silent: bool = False
+    plan: EditPlan,
+    music: bool,
+    *,
+    ducking: bool,
+    normalize_off: bool,
+    silent: bool = False,
+    cues: list[SfxCue] | None = None,
 ) -> str:
+    if cues:
+        # effects go on top of the NORMALISED voice/music, so their level relative to speech is fixed
+        # (calibrated in sfx.py) whatever the raw recording's loudness; a limiter catches the peaks
+        base = _audio_graph(plan, music, ducking=ducking, normalize_off=normalize_off, silent=silent)
+        fx = sfx_graph(cues, plan.sfx.volume, "voice", "mixfx")
+        return f"{base.removesuffix('[a]')}[voice];{fx};[mixfx]{SFX_LIMITER}[a]"
     if not music:
         return f"[0:a]{_loudness(plan, skip_loudnorm=silent)}[a]"
     total = plan.total_duration()
@@ -97,14 +114,17 @@ async def render_final(
 ) -> None:
     """Burn subtitles in (when there is an ASS file), mix music (ducked under speech), normalise loudness."""
     cwd = (ass_path or out_path).parent
-    video = _video_graph(ass_path, fonts_dir, cwd)
+    video = _video_graph(ass_path, fonts_dir, cwd, plan.look)
+    cues = plan_cues(plan)
     music = music_path is not None and plan.music.enabled
     silent = not music and await audio_is_silent(joined)  # a music mix always has signal
     if silent:
         logger.info("joined audio is silent: skipping loudness normalisation")
 
     async def encode(*, ducking: bool, normalize_off: bool) -> None:
-        audio = _audio_graph(plan, music, ducking=ducking, normalize_off=normalize_off, silent=silent)
+        audio = _audio_graph(
+            plan, music, ducking=ducking, normalize_off=normalize_off, silent=silent, cues=cues
+        )
         graph = f"{video};{audio}"
         args = ["-y", "-loglevel", "error", "-i", str(joined)]
         if music:

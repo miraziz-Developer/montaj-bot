@@ -4,7 +4,7 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 
-from app.schemas.edit_plan import Clip, Reframe
+from app.schemas.edit_plan import RAMP_FAST, RAMP_SLOW, Clip, Reframe
 from app.services.media.ffmpeg import run_ffmpeg
 from app.services.media.probe import probe
 from app.services.render.face_track import FocusKey, focus_expr, focus_mean
@@ -110,7 +110,7 @@ def source_prefix(hdr: bool, sar: float) -> str:
 def fit_blur_graph(
     target_w: int,
     target_h: int,
-    speed: float,
+    speed: float | str,
     fps: int,
     *,
     inscribed_square: bool = False,
@@ -125,6 +125,7 @@ def fit_blur_graph(
     (full-width foreground over a darkened blur of itself) - it reads as ordinary footage, not a widget."""
     w, h = target_w, target_h
     lead = source_prefix(hdr, sar)
+    timing = speed if isinstance(speed, str) else f"setpts=PTS/{speed:g}"  # str: a `retime()` filter
     if inscribed_square:
         side = f"'trunc(min(iw,ih)*{ROUND_NOTE_INSCRIBED_FRACTION}/2)*2'"
         crop = f"crop=w={side}:h={side}:x='(iw-ow)/2':y='(ih-oh)/2'"
@@ -135,14 +136,14 @@ def fit_blur_graph(
             f"eq=brightness=-0.08:saturation=1.1[bg];"
             f"[b]scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,"
             f"unsharp=5:5:0.5:5:5:0[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setpts=PTS/{speed:g},fps={fps},format=yuv420p[v]"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,{timing},fps={fps},format=yuv420p[v]"
         )
     return (
         f"[0:v]{lead}{color_polish()}[polished];"
         f"[polished]split=2[a][b];"
         f"[a]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=20:5[bg];"
         f"[b]scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg];"
-        f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setpts=PTS/{speed:g},fps={fps},format=yuv420p[v]"
+        f"[bg][fg]overlay=(W-w)/2:(H-h)/2,{timing},fps={fps},format=yuv420p[v]"
     )
 
 
@@ -163,9 +164,25 @@ def stabilize() -> str:
     return "deshake"
 
 
+def retime(clip: Clip) -> str:
+    """Video timestamps for the clip's speed: constant (`PTS/speed`) or a speed ramp.
+
+    A ramp changes speed linearly in SOURCE time from s0 to s1 (s = clip.speed * RAMP_FAST/RAMP_SLOW), so
+    output time is out(T) = K*ln(1 + c*T) with K = D/(s1-s0), c = (s1-s0)/(D*s0). RAMP_SLOW is chosen so the
+    total equals D/speed: the clip keeps its planned length."""
+    if clip.speed_ramp == "none":
+        return f"setpts=PTS/{clip.speed:g}"
+    fast, slow = clip.speed * RAMP_FAST, clip.speed * RAMP_SLOW
+    s0, s1 = (fast, slow) if clip.speed_ramp == "fast_to_slow" else (slow, fast)
+    d = clip.src_out - clip.src_in
+    k, c = d / (s1 - s0), (s1 - s0) / (d * s0)
+    return f"setpts='{k:.6f}*log(1+{c:.6f}*max(T-STARTT,0))/TB'"
+
+
 def audio_filter(clip: Clip) -> str:
     parts = []
-    if clip.speed != 1.0:
+    # a B-roll dub plays the primary narration window at 1x (its length already equals the clip's output)
+    if clip.speed != 1.0 and clip.audio.source != "primary":
         parts.append(f"atempo={clip.speed:g}")  # one instance covers the schema's 0.5..2.0 range
     parts.append(f"volume={0 if clip.audio.mute else clip.audio.volume:g}")
     # `apad` pads with silence if the (possibly dubbed-in, P13) audio window decodes shorter than the
@@ -241,7 +258,7 @@ async def render_clip(
 
     if clip.reframe.mode == "fit_blur" or round_note:  # `fill`'s crop would show the circle's corners
         graph = fit_blur_graph(
-            target_w, target_h, clip.speed, fps, inscribed_square=round_note, hdr=hdr, sar=sar
+            target_w, target_h, retime(clip), fps, inscribed_square=round_note, hdr=hdr, sar=sar
         )
         args += ["-filter_complex", graph, "-map", "[v]"]
     else:
@@ -249,7 +266,7 @@ async def render_clip(
         args += [
             "-vf",
             f"{source_prefix(hdr, sar)}{stabilize() + ',' if shake_fix else ''}{color_polish()},{chain},"
-            f"setpts=PTS/{clip.speed:g},fps={fps},format=yuv420p",
+            f"{retime(clip)},fps={fps},format=yuv420p",
             "-map", "0:v:0",
         ]  # fmt: skip
     args += ["-af", audio_filter(clip), "-map", audio_map, "-t", f"{out_dur:.3f}"]

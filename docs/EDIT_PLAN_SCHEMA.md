@@ -68,6 +68,8 @@ class Clip(BaseModel):
     src_in: float = Field(ge=0.0)
     src_out: float = Field(gt=0.0)
     speed: float = Field(1.0, ge=0.5, le=2.0)
+    # speed curve inside the clip; the AVERAGE stays `speed`, so out_duration is unchanged (see Stage A)
+    speed_ramp: Literal["none", "fast_to_slow", "slow_to_fast"] = "none"
     role: Role = "body"
     reframe: Reframe = Field(default_factory=Reframe)
     audio: ClipAudio = Field(default_factory=ClipAudio)
@@ -103,6 +105,11 @@ class Captions(BaseModel):
         if not _HEX.match(v):
             raise ValueError("color must be #RRGGBB")
         return v.upper()
+
+
+class Sfx(BaseModel):
+    enabled: bool = False  # whooshes on scene changes, pops on text overlays (placed by the renderer)
+    volume: float = Field(0.5, ge=0.0, le=1.0)
 
 
 class Music(BaseModel):
@@ -161,6 +168,8 @@ class EditPlan(BaseModel):
     clips: list[Clip] = Field(min_length=1, max_length=400)
     captions: Captions = Field(default_factory=Captions)
     music: Music = Field(default_factory=Music)
+    look: Literal["natural", "warm", "cool", "cinematic", "vivid", "bw", "vintage"] = "natural"
+    sfx: Sfx = Field(default_factory=Sfx)
     overlays: list[TextOverlay] = Field(default_factory=list, max_length=6)
     watermark: Watermark = Field(default_factory=Watermark)
     export: Export = Field(default_factory=Export)
@@ -252,6 +261,13 @@ ffmpeg ... -ss {src_in} -t {src_dur} -i SOURCE [-f lavfi -i anullsrc=r=48000:cl=
   and map `[v]`. (In overlay expressions write `W`,`H`,`w`,`h` literally: they are ffmpeg variables, not Python.)
   If the source aspect already equals the target aspect, `fill` with zoom 1.0 is just a scale.
 
+**Speed ramp.** `retime(clip)` replaces `setpts=PTS/speed`: speed changes linearly in source time from s0 to s1
+(`speed*1.6` <-> `speed*RAMP_SLOW`), i.e. `setpts='K*log(1+c*(T-STARTT))/TB'`. `RAMP_SLOW` (~0.57) is solved so the
+average is exactly 1x - the clip's output length, captions and B-roll dub windows are unaffected. The validator resets
+ramps on clips whose own sound is heard (it would warp the voice), and `apply_rhythm` never splits a ramped clip.
+A B-roll dub (`audio.source == "primary"`) plays its narration window at 1x (no `atempo`), and captions show the words
+of that primary window; muted clips and B-roll with its own sound get no captions.
+
 ### Stage B — join (`render/concat_stage.py`)
 All-cut plans: write `list.txt` with lines `file 'clip_0001.mp4'` (paths relative, no quotes inside names) then
 `ffmpeg ... -f concat -safe 0 -i list.txt -c copy joined.mp4` (all clips share codec/resolution/fps/audio params, so `-c copy` is valid).
@@ -278,6 +294,16 @@ Audio with music and ducking:
 [mix]loudnorm=I=-14:TP=-1.5:LRA=11[a]
 ```
 Without ducking: drop the sidechain and mix `[m]` with `[0:a]` directly. Add `-t {total}` so looped music ends with the video.
+
+**Look.** `plan.look` names one fixed colour grade from `render/looks.py` (colorbalance/curves/eq/vignette chains written
+in code, never by the AI); it runs in front of `ass` so text keeps its exact colours. `natural` = no filter.
+
+**Sound effects** (`render/sfx.py`, when `plan.sfx.enabled`). Synthesised by ffmpeg (`anoisesrc` whoosh, `aevalsrc` pop) -
+no sample files, nothing to license. Placement is code: a whoosh whose swell peaks on each *structural* cut (non-cut
+transition, source change, or a role change involving hook/cta/outro/broll), a plain jump cut only if the previous cue is
+>= 3 s old, a pop at each overlay start; cues >= 1.4 s apart, max 40. They are mixed AFTER loudnorm of the voice/music
+(`...loudnorm...[voice]; fx...; [voice][fx0]..amix=normalize=0[mixfx]; [mixfx]alimiter=limit=0.84:level=0[a]`), so their
+level relative to speech is fixed: at volume 0.4 a whoosh peaks ~-20 LUFS momentary against -14 LUFS speech.
 Encode: `-map "[v]" -map "[a]" -c:v libx264 -preset {p} -crf {crf} -pix_fmt yuv420p -r {fps} -c:a aac -b:a {ab}k -movflags +faststart final.mp4`.
 (`normalize=0` needs ffmpeg >= 4.4; mark `# VERIFY` and fall back to omitting it if the local ffmpeg rejects it.)
 

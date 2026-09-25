@@ -136,15 +136,28 @@ def _join(tokens: list[str]) -> str:
     return " ".join(tokens)
 
 
+def _heard_window(clip: Clip) -> tuple[float, float, float] | None:
+    """(start, end, rate) of the PRIMARY audio this clip plays, or None when no transcript speech is heard.
+    A B-roll dub plays the primary window at 1x; a B-roll's own sound and a muted clip have no transcript."""
+    if clip.audio.source == "primary" and clip.audio.primary_src_in is not None:
+        return clip.audio.primary_src_in, clip.audio.primary_src_out or clip.audio.primary_src_in, 1.0
+    if clip.source_id != "primary" or clip.audio.mute:
+        return None
+    return clip.src_in, clip.src_out, clip.speed
+
+
 def _clip_words(entry: ClipTimelineEntry, transcript: Transcript, uppercase: bool) -> list[_Word]:
-    clip = entry.clip
+    window = _heard_window(entry.clip)
+    if window is None:
+        return []
+    lo, hi, rate = window
 
     def to_out(t: float) -> float:
-        return entry.output_start + (min(max(t, clip.src_in), clip.src_out) - clip.src_in) / clip.speed
+        return entry.output_start + (min(max(t, lo), hi) - lo) / rate
 
     words = []
     for word in transcript.all_words():
-        if word.start >= clip.src_in - WORD_TOLERANCE_SEC and word.end <= clip.src_out + WORD_TOLERANCE_SEC:
+        if word.start >= lo - WORD_TOLERANCE_SEC and word.end <= hi + WORD_TOLERANCE_SEC:
             text = escape_ass(word.text.upper() if uppercase else word.text)
             if text:
                 words.append(_Word(text, to_out(word.start), to_out(word.end)))

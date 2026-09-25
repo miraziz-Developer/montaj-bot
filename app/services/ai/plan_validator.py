@@ -160,6 +160,7 @@ def apply_rhythm(
         ranges = (
             _split_clip(clip, transcript, preset.max_shot_sec)
             if clip.source_id == "primary"
+            and clip.speed_ramp == "none"  # a ramp is one gesture: keep it whole
             else [(clip.src_in, clip.src_out)]
         )
         for i, (start, end) in enumerate(ranges):
@@ -246,7 +247,10 @@ def validate_plan(
             continue  # sliver left after clamping: drop
         if (start, end) != (clip.src_in, clip.src_out):
             clip = clip.model_copy(update={"src_in": start, "src_out": end})
-        clips.append(_fix_or_drop_primary_dub(clip, source_duration))
+        clip = _fix_or_drop_primary_dub(clip, source_duration)
+        if clip.speed_ramp != "none" and not (clip.audio.mute or clip.audio.source == "primary"):
+            clip = clip.model_copy(update={"speed_ramp": "none"})  # a ramp would warp the speaker's voice
+        clips.append(clip)
 
     if preset.keep_chronology and all(c.source_id == "primary" for c in clips):
         clips.sort(key=lambda c: c.src_in)  # mixed sources have no single shared timeline to sort by

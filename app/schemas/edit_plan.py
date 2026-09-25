@@ -1,15 +1,33 @@
 from __future__ import annotations
 
+import math
 import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from app.services.render.looks import Look
 
 Aspect = Literal["9:16", "16:9", "1:1", "original"]
 StylePreset = Literal["dynamic_reels", "clean_talk", "ad_commercial", "vlog_story"]
 Role = Literal["hook", "body", "broll", "cta", "outro", "filler"]
 _HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _CTRL = re.compile(r"[\x00-\x1f\x7f]")
+SpeedRamp = Literal["none", "fast_to_slow", "slow_to_fast"]
+RAMP_FAST = 1.6  # multiplier of clip.speed at the fast end of a ramp
+
+
+def _duration_neutral_slow(fast: float) -> float:
+    """The slow end s of a linear speed ramp fast<->s whose AVERAGE is 1x: ln(fast/s) / (fast - s) == 1.
+    So a ramp changes the feel but never a clip's output duration (timeline, captions, dubs stay exact)."""
+    lo, hi = 1e-3, 1.0 - 1e-9
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if math.log(fast / mid) / (fast - mid) > 1 else (lo, mid)
+    return (lo + hi) / 2
+
+
+RAMP_SLOW = _duration_neutral_slow(RAMP_FAST)  # ~0.57
 
 
 def _clean_text(v: str) -> str:
@@ -55,6 +73,8 @@ class Clip(BaseModel):
     src_in: float = Field(ge=0.0)
     src_out: float = Field(gt=0.0)
     speed: float = Field(1.0, ge=0.5, le=2.0)
+    # speed curve inside the clip (average stays `speed`); only for clips whose own sound is not heard
+    speed_ramp: SpeedRamp = "none"
     role: Role = "body"
     reframe: Reframe = Field(default_factory=Reframe)
     audio: ClipAudio = Field(default_factory=ClipAudio)
@@ -90,6 +110,11 @@ class Captions(BaseModel):
         if not _HEX.match(v):
             raise ValueError("color must be #RRGGBB")
         return v.upper()
+
+
+class Sfx(BaseModel):
+    enabled: bool = False  # whooshes on scene changes, pops on text overlays (placed by the renderer)
+    volume: float = Field(0.5, ge=0.0, le=1.0)
 
 
 class Music(BaseModel):
@@ -148,6 +173,8 @@ class EditPlan(BaseModel):
     clips: list[Clip] = Field(min_length=1, max_length=400)
     captions: Captions = Field(default_factory=Captions)
     music: Music = Field(default_factory=Music)
+    look: Look = "natural"
+    sfx: Sfx = Field(default_factory=Sfx)
     overlays: list[TextOverlay] = Field(default_factory=list, max_length=6)
     watermark: Watermark = Field(default_factory=Watermark)
     export: Export = Field(default_factory=Export)
