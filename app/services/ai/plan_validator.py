@@ -304,7 +304,7 @@ def validate_plan(
     if total > all_footage * DURATION_SLACK:
         errors.append(f"plan is longer ({total:.1f}s) than the available footage ({all_footage:.1f}s)")
 
-    music = plan.music
+    music = plan.music.model_copy(update={"beat_sync": True})  # a render decision, not the AI's
     if music.enabled and (music.track_id is None or music.track_id not in music_ids):
         music = music.model_copy(update={"enabled": False, "track_id": None})
 

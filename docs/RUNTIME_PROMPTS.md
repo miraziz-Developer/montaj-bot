@@ -184,7 +184,7 @@ human_summary_uz.
                    "music_volume": 0.10, "captions": {"style": "word_highlight", "max_words_per_line": 3, "highlight_color": "#FFD400"}},
   "creator_profile": {"niche": "Avto savdo", "purpose": "Instagram Reels"},
   "analysis": {"overall": {}, "scenes": [], "moments": []},
-  "transcript_segments": [{"start": 0.0, "end": 4.2, "text": "..."}],
+  "transcript_segments": [{"start": 0.0, "end": 4.2, "text": "..."}],  // phrases <= 4 s, exact word times (plan_text.transcript_phrases)
   "silences": [{"start": 10.2, "end": 11.4}],
   "music_tracks": [{"id": "upbeat_01", "mood": "upbeat"}],
   "broll_sources": [{"source_id": "broll_1", "duration_sec": 14.0, "width": 1080, "height": 1920,

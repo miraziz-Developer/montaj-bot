@@ -292,3 +292,21 @@ def test_hostile_text_never_reaches_the_ass_file_as_markup() -> None:
     assert (
         len(_events(_ass(plan, transcript))) == 4
     )  # 2 caption words + overlay + watermark, no extra lines injected
+
+
+@pytest.mark.parametrize("style", ["pop", "word_highlight", "karaoke", "classic"])
+def test_captions_never_overlap_in_continuous_speech(style: str) -> None:
+    """Regression (real render): the last word's tail ran into the next group and both were drawn at once."""
+    words = [
+        (w, 30 + 0.3 * i, 30 + 0.3 * (i + 1))
+        for i, w in enumerate("bir ikki uch tort besh olti yetti".split())
+    ]
+    plan = make_plan([(29, 33)], captions=Captions(style=style, max_words_per_line=3))
+    events = _events(_ass(plan, make_transcript(words)))
+    times = [(ass_time_to_sec(_fields(e)[1]), ass_time_to_sec(_fields(e)[2])) for e in events]
+    assert all(a_end <= b_start + 1e-9 for (_, a_end), (b_start, _) in zip(times, times[1:], strict=False))
+
+
+def ass_time_to_sec(value: str) -> float:
+    h, m, s = value.split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)

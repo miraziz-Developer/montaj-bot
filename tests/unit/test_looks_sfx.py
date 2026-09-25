@@ -53,8 +53,15 @@ def test_structural_cuts_get_a_whoosh_that_peaks_on_the_cut() -> None:
 def test_plain_jump_cuts_are_sparse_and_cues_keep_a_minimum_gap() -> None:
     clips = [_clip(i, i * 1.0, i * 1.0 + 1.0) for i in range(1, 12)]  # eleven 1 s body clips
     cues = plan_cues(_plan(clips, sfx=Sfx(enabled=True)))
-    assert len(cues) <= 4  # one at most every 3 s of plain jump cuts
+    assert len(cues) == 2  # 10 plain jump cuts in 11 s: an accent at the first and one 8 s later
     assert all(b.t - a.t >= MIN_GAP_SEC for a, b in zip(cues, cues[1:], strict=False))
+
+
+def test_rhythm_crossfades_are_not_scene_changes() -> None:
+    fade = {"transition_in": {"type": "crossfade", "duration": 0.12}}
+    clips = [_clip(1, 0, 3), *[_clip(i, i * 3.0, i * 3.0 + 3.0, **fade) for i in range(2, 5)]]
+    cues = plan_cues(_plan(clips, sfx=Sfx(enabled=True)))
+    assert [round(c.t, 2) for c in cues] == [2.68]  # crossfaded cuts at 3, 6, 9: only the first is accented
 
 
 def test_overlays_get_a_pop() -> None:

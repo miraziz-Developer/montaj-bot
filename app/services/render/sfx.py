@@ -2,8 +2,8 @@
 nothing to license). The AI only switches them on (`plan.sfx`); WHERE they land is decided here.
 
 A whoosh is pink noise that swells and snaps off, timed so its peak sits on the cut. Cues are sparse on
-purpose: only real "scene changes" (B-roll in/out, role changes, non-cut transitions) plus the occasional
-jump cut, never closer than MIN_GAP_SEC."""
+purpose: only real "scene changes" (B-roll in/out, role changes, fades to black) plus a jump cut when the
+last cue is JUMP_CUT_GAP_SEC old, never closer than MIN_GAP_SEC."""
 
 from dataclasses import dataclass
 
@@ -11,7 +11,9 @@ from app.schemas.edit_plan import EditPlan
 from app.services.render.captions_ass import build_timeline
 
 MIN_GAP_SEC = 1.4
-JUMP_CUT_GAP_SEC = 3.0  # a plain jump cut gets a whoosh only if the last cue was this long ago
+# a plain jump cut gets a whoosh only if the last cue was this long ago: an accent, not a click track (a real
+# render with 3 s put a whoosh on 7 of 9 cuts of a 36 s reel - far too busy)
+JUMP_CUT_GAP_SEC = 8.0
 MAX_CUES = 40
 WHOOSH_SEC = 0.48
 WHOOSH_PEAK_SEC = 0.32  # the swell peaks here: the cut lands on this offset
@@ -37,8 +39,10 @@ def plan_cues(plan: EditPlan) -> list[SfxCue]:
     candidates: list[tuple[float, str, bool]] = []  # (time, kind, structural)
     for prev, entry in zip(timeline, timeline[1:], strict=False):
         a, b = prev.clip, entry.clip
+        # the code's own rhythm crossfades sit on EVERY editorial cut of some styles, so they say nothing
+        # about a scene change; only a fade to black, a source switch or a role change does
         structural = (
-            b.transition_in.type != "cut"
+            b.transition_in.type == "fade_black"
             or a.source_id != b.source_id
             or (a.role != b.role and (a.role in _STRUCTURAL_ROLES or b.role in _STRUCTURAL_ROLES))
         )

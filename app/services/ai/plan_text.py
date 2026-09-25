@@ -102,19 +102,60 @@ def compact_analysis(analysis: VideoAnalysis, scenes: Sequence[Scene]) -> dict[s
     }
 
 
+# the planner picks cut points INSIDE a phrase by guessing from its text; 4 s phrases keep that guess close
+# (with 8 s phrases a real run still ended the hook just before the price it was meant to reveal)
+PHRASE_MAX_SEC = 4.0
+PHRASE_PAUSE_SEC = 0.5
+_SENTENCE_END = (".", "!", "?", "…")
+
+
+def transcript_phrases(transcript: Transcript) -> list[dict[str, Any]]:
+    """Short phrases with EXACT times from the word timestamps. STT segments can be ~30 s long (seen on a
+    real Azure transcript: 2 segments for 55 s); with only segment times the planner has to guess where
+    inside such a block a sentence is, and picked the wrong sentence for the hook. A phrase ends at a
+    sentence end, a pause, or PHRASE_MAX_SEC. Segments without words are passed through as they are."""
+    phrases: list[dict[str, Any]] = []
+    for segment in transcript.segments:
+        if not segment.words:
+            if segment.text.strip():
+                phrases.append({"start": segment.start, "end": segment.end, "text": segment.text.strip()})
+            continue
+        current: list[Any] = []
+        for i, word in enumerate(segment.words):
+            current.append(word)
+            nxt = segment.words[i + 1] if i + 1 < len(segment.words) else None
+            if (
+                nxt is None
+                or word.text.rstrip().endswith(_SENTENCE_END)
+                or nxt.start - word.end >= PHRASE_PAUSE_SEC
+                or nxt.end - current[0].start > PHRASE_MAX_SEC
+            ):
+                text = " ".join(w.text.strip() for w in current if w.text.strip())
+                phrases.append({"start": current[0].start, "end": current[-1].end, "text": text})
+                current = []
+    return phrases
+
+
 def compact_transcript(
-    transcript: Transcript, max_segments: int = 400, max_chars: int = 200
+    transcript: Transcript, max_segments: int = 900, max_chars: int = 200
 ) -> list[dict[str, Any]]:
-    """Merge consecutive segments into at most `max_segments` groups, each text cut to `max_chars`."""
-    segments = transcript.segments
-    if not segments:
+    """Phrases (see transcript_phrases) merged into at most `max_segments` groups. `max_chars` is per
+    phrase: a merged group may hold `max_chars` x its phrase count, so merging never drops speech."""
+    phrases = transcript_phrases(transcript)
+    if not phrases:
         return []
-    group = max(1, math.ceil(len(segments) / max_segments))
+    group = max(1, math.ceil(len(phrases) / max_segments))
     merged = []
-    for i in range(0, len(segments), group):
-        chunk = segments[i : i + group]
-        text = " ".join(s.text.strip() for s in chunk if s.text.strip())
-        merged.append({"start": _r(chunk[0].start), "end": _r(chunk[-1].end), "text": text[:max_chars]})
+    for i in range(0, len(phrases), group):
+        chunk = phrases[i : i + group]
+        text = " ".join(ph["text"] for ph in chunk)
+        merged.append(
+            {
+                "start": _r(chunk[0]["start"]),
+                "end": _r(chunk[-1]["end"]),
+                "text": text[: max_chars * len(chunk)],
+            }
+        )
     return merged
 
 

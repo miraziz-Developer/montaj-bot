@@ -170,8 +170,26 @@ def test_compact_transcript_merges_to_at_most_max_segments_and_truncates() -> No
     transcript = make_transcript(words, segment_gap=1.0)
     assert len(transcript.segments) == 1000
     compact = compact_transcript(transcript, max_segments=400, max_chars=200)
-    assert len(compact) <= 400 and all(len(s["text"]) <= 200 for s in compact)
+    assert len(compact) <= 400 and all(len(s["text"]) <= 200 * 3 for s in compact)
     assert compact[0]["start"] == 0.0 and compact[-1]["end"] == pytest.approx(1998.5, abs=0.01)
+    assert " ".join(s["text"] for s in compact).split() == [f"word{i}" for i in range(1000)]  # nothing lost
+
+
+def test_a_long_stt_segment_becomes_phrases_with_exact_times() -> None:
+    """Regression: a real 27 s STT segment gave the planner one time range, and it put the hook one
+    sentence after the price; the text was also cut at 200 chars."""
+    said = ("turibdi narxiga keladigan bo'lsak narxini 6300 dollar qo'ydik. Kimga qiziq bo'lsa "
+            "egalarini kam ko'ndirib qo'ydik. " + "gap " * 60).split()  # fmt: skip
+    words = [(w, 30.0 + i * 0.4, 30.0 + i * 0.4 + 0.3) for i, w in enumerate(said)]
+    transcript = make_transcript(words, segment_gap=5.0)
+    assert len(transcript.segments) == 1
+    compact = compact_transcript(transcript)
+    first = compact[0]
+    assert first["text"].endswith("6300 dollar qo'ydik.") and first["start"] == 30.0
+    assert first["end"] == pytest.approx(30.0 + 7 * 0.4 + 0.3)
+    assert compact[1]["text"].startswith("Kimga") and compact[1]["start"] == pytest.approx(30.0 + 8 * 0.4)
+    assert all(s["end"] - s["start"] <= 4.0 for s in compact)
+    assert " ".join(s["text"] for s in compact).split() == said  # nothing truncated
 
 
 def test_compact_transcript_empty() -> None:

@@ -115,6 +115,33 @@ def test_snap_cuts_undoes_a_new_overlap_between_neighbours() -> None:
     assert [(c.src_in, c.src_out) for c in snapped.clips] == [(0.0, 5.0), (5.1, 9.0)]
 
 
+REAL_WORDS = [  # a real Azure transcript (car sale), continuous speech: every word starts where one ends
+    ("turibdi", 31.28, 32.24), ("narxiga", 32.24, 32.64), ("keladigan", 32.64, 33.04),
+    ("bo'lsak", 33.04, 33.28), ("narxini", 33.28, 33.84), ("6300", 34.16, 34.88), ("dollar", 34.88, 35.12),
+    ("qo'ydik.", 35.12, 35.68), ("Kimga", 35.68, 36.0),
+]  # fmt: skip
+
+
+def test_the_out_tail_never_leaks_into_the_next_word() -> None:
+    words = make_transcript(REAL_WORDS, segment_gap=5).all_words()
+    assert snap_point(35.0, "out", words, []) == pytest.approx(35.12)  # "dollar" ends, "qo'ydik" not started
+    assert snap_point(33.1, "in", words, []) == pytest.approx(33.04)  # no lead into "keladigan"
+
+
+def test_adjacent_cuts_that_collide_meet_at_a_word_gap_instead_of_mid_word() -> None:
+    """Regression (real plan): body clip ..32.9 and hook 33.0..35.0 both snapped outward, collided, and were
+    reverted to the raw times - leaving both cut mid-word ("keladigan", "dollar")."""
+    transcript = make_transcript(REAL_WORDS, segment_gap=5)
+    plan = make_plan([(28.96, 32.9), (33.0, 35.0)])
+    snapped = snap_cuts(plan, transcript, [])
+    body, hook = snapped.clips
+    words = transcript.all_words()
+    assert body.src_out == hook.src_in  # they meet exactly at one clean point
+    for t in (body.src_out, hook.src_out):
+        assert not any(w.start + 1e-6 < t < w.end - 1e-6 for w in words), f"{t} is inside a word"
+    assert hook.src_out == pytest.approx(35.12)  # the whole "dollar"
+
+
 def test_snap_cuts_leaves_broll_clips_untouched() -> None:
     """A B-roll clip's src_in/src_out index into its OWN file - snapping them to the PRIMARY transcript's
     word/silence timing would be meaningless (P13)."""

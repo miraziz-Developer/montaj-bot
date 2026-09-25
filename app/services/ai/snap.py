@@ -10,6 +10,7 @@ SNAP_WINDOW_SEC = 0.35
 IN_LEAD_SEC = 0.05  # src_in  -> word.start - 0.05
 OUT_TAIL_SEC = 0.08  # src_out -> word.end + 0.08
 MIN_CLIP_SEC = 0.3
+JOIN_WINDOW_SEC = 0.6  # two clips that collide after snapping meet at a word gap this close to their cut
 _EPS = 1e-6
 
 
@@ -17,8 +18,14 @@ def _word_containing(t: float, words: Sequence[Word]) -> Word | None:
     return next((w for w in words if w.start + _EPS < t < w.end - _EPS), None)
 
 
-def _word_edge(word: Word, kind: str) -> float:
-    return max(0.0, word.start - IN_LEAD_SEC) if kind == "in" else word.end + OUT_TAIL_SEC
+def _word_edge(word: Word, kind: str, words: Sequence[Word] = ()) -> float:
+    """Just outside `word`, with a little air - but never into the neighbouring word: in continuous speech
+    the next word starts right where this one ends, and the 80 ms tail would leak a syllable of it."""
+    if kind == "in":
+        prev_end = max((w.end for w in words if w.end <= word.start + _EPS), default=0.0)
+        return max(0.0, word.start - IN_LEAD_SEC, prev_end)
+    next_start = min((w.start for w in words if w.start >= word.end - _EPS), default=float("inf"))
+    return min(word.end + OUT_TAIL_SEC, next_start)
 
 
 def snap_point(t: float, kind: str, words: Sequence[Word], silences: Sequence[Silence]) -> float:
@@ -28,19 +35,27 @@ def snap_point(t: float, kind: str, words: Sequence[Word], silences: Sequence[Si
     """
     word = _word_containing(t, words)
     if word is not None:
-        return _word_edge(word, kind)
+        return _word_edge(word, kind, words)
 
     midpoints = [(s.start + s.end) / 2 for s in silences]
     near_mids = [m for m in midpoints if abs(m - t) <= SNAP_WINDOW_SEC]
     if near_mids:
         result = min(near_mids, key=lambda m: abs(m - t))
     else:
-        edges = [_word_edge(w, kind) for w in words]
+        edges = [_word_edge(w, kind, words) for w in words]
         near_edges = [e for e in edges if abs(e - t) <= SNAP_WINDOW_SEC]
         result = min(near_edges, key=lambda e: abs(e - t)) if near_edges else t
 
     landed_in = _word_containing(result, words)  # STT and silence detection can disagree slightly
-    return _word_edge(landed_in, kind) if landed_in is not None else result
+    return _word_edge(landed_in, kind, words) if landed_in is not None else result
+
+
+def _shared_boundary(t: float, words: Sequence[Word], silences: Sequence[Silence]) -> float | None:
+    """The word gap (or silence middle) nearest `t`: a point where both neighbours can be cut cleanly."""
+    gaps = [(a.end + b.start) / 2 for a, b in zip(words, words[1:], strict=False) if b.start >= a.end - _EPS]
+    gaps += [(si.start + si.end) / 2 for si in silences]
+    near = [g for g in gaps if abs(g - t) <= JOIN_WINDOW_SEC and _word_containing(g, words) is None]
+    return min(near, key=lambda g: abs(g - t)) if near else None
 
 
 def _overlap(a: Clip, b: Clip) -> float:
@@ -75,6 +90,17 @@ def snap_cuts(plan: EditPlan, transcript: Transcript, silences: Sequence[Silence
         for left, right in zip(order, order[1:], strict=False):
             new_overlap = _overlap(snapped[left], snapped[right]) > 0
             old_overlap = _overlap(originals[left], originals[right]) <= 0
-            if new_overlap and old_overlap:
+            if not (new_overlap and old_overlap):
+                continue
+            # Both edges snapped outward past each other (adjacent cuts in continuous speech). Reverting to
+            # the raw times would put BOTH cuts back inside words (seen on a real plan: "dollar" cut in
+            # half), so they meet at the nearest clean word gap instead; revert only if there is none.
+            cut = (originals[left].src_out + originals[right].src_in) / 2
+            joint = _shared_boundary(cut, words, silences)
+            a, b = snapped[left], snapped[right]
+            if joint is not None and joint - a.src_in >= MIN_CLIP_SEC and b.src_out - joint >= MIN_CLIP_SEC:
+                snapped[left] = a.model_copy(update={"src_out": joint})
+                snapped[right] = b.model_copy(update={"src_in": joint})
+            else:
                 snapped[left], snapped[right] = originals[left], originals[right]
     return plan.model_copy(update={"clips": snapped})

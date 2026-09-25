@@ -225,14 +225,14 @@ def _pop_tag(highlight: str) -> str:
     )
 
 
-def _karaoke_event(group: list[_Word]) -> str:
+def _karaoke_event(group: list[_Word]) -> tuple[float, float, str, str]:
     """One event per group: each word sweeps from the plain colour to the highlight colour as it is spoken
     (`\\kf`, durations in centiseconds; the style's secondary colour is the not-yet-spoken one)."""
     parts = []
     for i, word in enumerate(group):
         stop = group[i + 1].start if i < len(group) - 1 else word.end
         parts.append(f"{{\\kf{max(1, round((stop - word.start) * 100))}}}{word.text}")
-    return _dialogue(group[0].start, group[-1].end + LAST_WORD_TAIL_SEC, "Kar", _join(parts))
+    return group[0].start, group[-1].end + LAST_WORD_TAIL_SEC, "Kar", _join(parts)
 
 
 def _caption_events(
@@ -247,7 +247,7 @@ def _caption_events(
     highlight, primary = ass_color(caps.highlight_color), ass_color(caps.primary_color)
     font_px = caps.font_size_pct / 100 * target_h
     max_line_width_px = target_w * (1 - 2 * SIDE_MARGIN_FRACTION)
-    events: list[str] = []
+    events: list[tuple[float, float, str, str]] = []  # start, end, style, text
     for entry in timeline:
         groups = _groups(
             _clip_words(entry, transcript, caps.uppercase),
@@ -257,7 +257,7 @@ def _caption_events(
         )
         for group in groups:
             if caps.style == "classic":
-                events.append(_dialogue(group[0].start, group[-1].end, "Cap", _join([w.text for w in group])))
+                events.append((group[0].start, group[-1].end, "Cap", _join([w.text for w in group])))
                 continue
             if caps.style == "karaoke":
                 events.append(_karaoke_event(group))
@@ -268,8 +268,22 @@ def _caption_events(
                 on = _pop_tag(highlight) if pop else f"{{\\c{highlight}&}}"
                 off = f"{{\\fscx100\\fscy100\\c{primary}&}}" if pop else f"{{\\c{primary}&}}"
                 tokens = [f"{on}{w.text}{off}" if j == i else w.text for j, w in enumerate(group)]
-                events.append(_dialogue(word.start, max(end, word.start + 0.02), "Cap", _join(tokens)))
-    return events
+                events.append((word.start, max(end, word.start + 0.02), "Cap", _join(tokens)))
+    return [_dialogue(start, end, style, text) for start, end, style, text in _no_overlap(events)]
+
+
+def _no_overlap(events: list[tuple[float, float, str, str]]) -> list[tuple[float, float, str, str]]:
+    """Each caption ends by the time the next one starts. In continuous speech the last word's tail ran
+    into the next group, and for a frame or two both were drawn on top of each other (seen on a real
+    render: "6300 dollar" and "qo'ydik." overprinted)."""
+    ordered = sorted(events, key=lambda e: e[0])
+    result = []
+    for i, (start, end, style, text) in enumerate(ordered):
+        if i + 1 < len(ordered):
+            end = min(end, ordered[i + 1][0])
+        if end - start >= 0.01:  # ASS time has centisecond resolution
+            result.append((start, end, style, text))
+    return result
 
 
 def build_ass(

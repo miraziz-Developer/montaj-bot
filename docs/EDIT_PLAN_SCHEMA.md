@@ -208,8 +208,10 @@ both dimensions even. In "light mode" (long videos) and for `RENDER_PRESET=ultra
    side (two texts in one zone look cluttered).
 3. `snap.snap_cuts(plan, transcript, silences)`: move every PRIMARY-source `src_in`/`src_out` to the nearest safe point within
    +-0.35 s: prefer the middle of a silence gap; else a word boundary (`src_in` -> word.start - 0.05, `src_out` -> word.end + 0.08);
-   never cut inside a word. Keep `src_out - src_in >= 0.3`. B-roll clips are left untouched (the transcript is timed against the
-   primary file only); overlap undoing is done per `source_id`.
+   never cut inside a word, and the lead/tail never reaches into the neighbouring word (continuous speech). Keep
+   `src_out - src_in >= 0.3`. B-roll clips are left untouched (the transcript is timed against the primary file only). Two
+   clips whose snapped edges now overlap (adjacent cuts) meet at the nearest word gap/silence within 0.6 s; only without
+   one are they reverted to the raw times. Per `source_id`.
 4. `plan_validator.apply_rhythm(plan, transcript, preset, source_width, source_height)`: split PRIMARY clips longer than `max_shot_sec`
    at the best sentence/pause boundary (>= 1.0 s from clip edges), then assign `reframe.zoom` alternating through `zoom_levels`
    (skip if source is 16:9 -> 16:9 and preset is clean_talk/vlog_story). A small square source (a Telegram round video note,

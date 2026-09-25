@@ -328,3 +328,9 @@ def test_fallback_drops_noise_fragments_between_long_silences() -> None:
     transcript = make_transcript(speech(0, 5) + speech(11, 16))
     plan = _fallback(transcript, [Silence(5.0, 10.0), Silence(10.4, 10.9)], 16.0)
     assert all(c.src_out - c.src_in >= 1.0 for c in plan.clips)
+
+
+def test_beat_sync_is_a_render_decision_the_ai_cannot_turn_off() -> None:
+    plan = make_plan([(0, 10)], music=Music(enabled=True, track_id="upbeat_01", beat_sync=False))
+    fixed, errors = _validate(plan, music_ids={"upbeat_01"})
+    assert errors == [] and fixed.music.beat_sync is True
