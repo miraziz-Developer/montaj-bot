@@ -118,6 +118,7 @@ class Music(BaseModel):
     volume: float = Field(0.10, ge=0.0, le=0.5)  # linear gain applied to the music track
     ducking: bool = True  # lower music while someone speaks
     fade_out_sec: float = Field(2.0, ge=0.0, le=5.0)
+    beat_sync: bool = True  # start the track where the cuts land on its beat
 
 
 class TextOverlay(BaseModel):
@@ -295,6 +296,12 @@ Audio with music and ducking:
 [mix]loudnorm=I=-14:TP=-1.5:LRA=11[a]
 ```
 Without ducking: drop the sidechain and mix `[m]` with `[0:a]` directly. Add `-t {total}` so looped music ends with the video.
+
+**Beat sync** (`render/beats.py`, `music.beat_sync`, default on). Cuts are never moved (they sit on word boundaries).
+The track's beat grid is detected (spectral-flux onsets, autocorrelation tempo with a 120 BPM prior, then a joint fine
+tempo/phase comb search; onset latency calibrated on click tracks: tempo +-0.15 BPM, phase +-12 ms), and the music starts
+at the offset where the most cuts (scene changes weighted x2) fall within 70 ms of a beat:
+`[1:a]atrim=start={o},asetpts=PTS-STARTPTS,afade=t=in:d=0.25,volume=...`. No steady pulse / analysis error -> offset 0.
 
 **Look.** `plan.look` names one fixed colour grade from `render/looks.py` (colorbalance/curves/eq/vignette chains written
 in code, never by the AI); it runs in front of `ass` so text keeps its exact colours. `natural` = no filter.

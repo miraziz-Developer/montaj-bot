@@ -124,6 +124,7 @@ class Music(BaseModel):
     volume: float = Field(0.10, ge=0.0, le=0.5)  # linear gain applied to the music track
     ducking: bool = True  # lower music while someone speaks
     fade_out_sec: float = Field(2.0, ge=0.0, le=5.0)
+    beat_sync: bool = True  # start the track where the video's cuts land on its beat (render/beats.py)
 
 
 class TextOverlay(BaseModel):

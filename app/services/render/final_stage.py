@@ -6,6 +6,8 @@ from pathlib import Path
 
 from app.schemas.edit_plan import EditPlan
 from app.services.media.ffmpeg import FFmpegError, run_ffmpeg
+from app.services.render.beats import best_offset, detect_beats, on_beat_fraction
+from app.services.render.captions_ass import build_timeline
 from app.services.render.looks import look_filter
 from app.services.render.sfx import SfxCue, plan_cues, sfx_graph
 from app.services.render.stickers import PlacedSticker, sticker_file, sticker_graph, sticker_inputs
@@ -13,6 +15,7 @@ from app.services.render.stickers import PlacedSticker, sticker_file, sticker_gr
 logger = logging.getLogger(__name__)
 
 LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11"
+MUSIC_ENTRY_FADE_SEC = 0.25  # a music track started mid-bar (beat sync offset) fades in instead of clicking
 # after the effects are added on top of the normalised voice: catch their peaks (-1.5 dBFS), no auto-gain
 SFX_LIMITER = "alimiter=limit=0.84:level=0"
 # Substrings of ffmpeg errors that mean "this ffmpeg build lacks a filter/option we use for the music mix".
@@ -103,11 +106,19 @@ def _audio_graph(
     normalize_off: bool,
     silent: bool = False,
     cues: list[SfxCue] | None = None,
+    music_offset: float = 0.0,
 ) -> str:
     if cues:
         # effects go on top of the NORMALISED voice/music, so their level relative to speech is fixed
         # (calibrated in sfx.py) whatever the raw recording's loudness; a limiter catches the peaks
-        base = _audio_graph(plan, music, ducking=ducking, normalize_off=normalize_off, silent=silent)
+        base = _audio_graph(
+            plan,
+            music,
+            ducking=ducking,
+            normalize_off=normalize_off,
+            silent=silent,
+            music_offset=music_offset,
+        )
         fx = sfx_graph(cues, plan.sfx.volume, "voice", "mixfx")
         return f"{base.removesuffix('[a]')}[voice];{fx};[mixfx]{SFX_LIMITER}[a]"
     if not music:
@@ -115,6 +126,11 @@ def _audio_graph(
     total = plan.total_duration()
     fade = min(plan.music.fade_out_sec, total)
     music_chain = f"volume={plan.music.volume:g}"
+    if music_offset > 0:
+        music_chain = (
+            f"atrim=start={music_offset:.3f},asetpts=PTS-STARTPTS,"
+            f"afade=t=in:d={MUSIC_ENTRY_FADE_SEC},{music_chain}"
+        )
     if fade > 0:
         music_chain += f",afade=t=out:st={max(total - fade, 0):.3f}:d={fade:g}"
     amix = "amix=inputs=2:duration=first:dropout_transition=0" + (":normalize=0" if normalize_off else "")
@@ -128,6 +144,33 @@ def _audio_graph(
     else:
         mix = f"[1:a]{music_chain}[m];[m][0:a]{amix}{compensate}[mix]"
     return f"{mix};[mix]{_loudness(plan)}[a]"
+
+
+def cut_times(plan: EditPlan) -> tuple[list[float], list[float]]:
+    """Output times of every cut, and a weight per cut (scene changes count double for beat sync)."""
+    timeline = build_timeline(plan.clips)
+    times, weights = [], []
+    for prev, entry in zip(timeline, timeline[1:], strict=False):
+        a, b = prev.clip, entry.clip
+        times.append(entry.output_start)
+        weights.append(2.0 if a.source_id != b.source_id or a.role != b.role else 1.0)
+    return times, weights
+
+
+async def music_offset_for(plan: EditPlan, music_path: Path) -> float:
+    """Where in the track the music starts so the cuts land on the beat (0 = from the top, unsynced)."""
+    if not plan.music.beat_sync:
+        return 0.0
+    grid = await detect_beats(music_path)
+    if grid is None:
+        return 0.0
+    cuts, weights = cut_times(plan)
+    offset = best_offset(grid, cuts, weights)
+    logger.info(
+        "music beat sync: %.1f BPM, offset %.2fs, cuts on beat %.0f%% (unsynced %.0f%%)",
+        grid.bpm, offset, 100 * on_beat_fraction(grid, cuts, offset), 100 * on_beat_fraction(grid, cuts, 0.0),
+    )  # fmt: skip
+    return offset
 
 
 async def render_final(
@@ -153,13 +196,15 @@ async def render_final(
     )  # fmt: skip
     cues = plan_cues(plan)
     silent = not music and await audio_is_silent(joined)  # a music mix always has signal
+    offset = await music_offset_for(plan, music_path) if music and music_path else 0.0
     if silent:
         logger.info("joined audio is silent: skipping loudness normalisation")
 
     async def encode(*, ducking: bool, normalize_off: bool) -> None:
         audio = _audio_graph(
-            plan, music, ducking=ducking, normalize_off=normalize_off, silent=silent, cues=cues
-        )
+            plan, music, ducking=ducking, normalize_off=normalize_off, silent=silent, cues=cues,
+            music_offset=offset,
+        )  # fmt: skip
         graph = f"{video};{audio}"
         args = ["-y", "-loglevel", "error", "-i", str(joined)]
         if music:
