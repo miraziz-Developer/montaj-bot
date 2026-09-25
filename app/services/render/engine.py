@@ -14,6 +14,7 @@ from app.services.media.probe import looks_like_round_video_note, probe
 from app.services.render.captions_ass import build_ass, build_timeline, has_events
 from app.services.render.clip_stage import render_clip
 from app.services.render.concat_stage import concat_clips
+from app.services.render.face_track import MODEL_NAME, track_clip_focus
 from app.services.render.final_stage import render_final
 from app.services.render.music import resolve_music_track
 from app.services.stt.base import Transcript
@@ -79,6 +80,7 @@ async def render_plan(
     joined = workdir / "joined.mp4"
     concurrency = clip_concurrency or get_settings().render_clip_concurrency
     shake_fix = get_settings().render_stabilize
+    face_tracking = get_settings().render_face_tracking
 
     infos = {source_id: await probe(str(path)) for source_id, path in sources.items()}
     info = infos["primary"]
@@ -93,11 +95,20 @@ async def render_plan(
         async with semaphore:
             clip_source = sources[clip.source_id]
             clip_info = infos[clip.source_id]
+            round_note = looks_like_round_video_note(clip_info.width, clip_info.height)
+            focus = None
+            if face_tracking and clip.reframe.mode == "fill" and not round_note:
+                focus = await track_clip_focus(
+                    clip_source, clip.src_in, clip.src_out,
+                    display_w=clip_info.width, display_h=clip_info.height,
+                    target_w=width, target_h=height, zoom=clip.reframe.zoom,
+                    model=assets_dir / "models" / MODEL_NAME,
+                ) or None  # fmt: skip
             await render_clip(
                 clip_source, clip, out_path=path, target_w=width, target_h=height, fps=fps,
                 has_audio=clip_info.has_audio, audio_duration_sec=clip_info.audio_duration_sec,
                 audio_source=sources["primary"] if clip.audio.source == "primary" else None,
-                round_note=looks_like_round_video_note(clip_info.width, clip_info.height),
+                round_note=round_note, focus_track=focus,
                 hdr=clip_info.is_hdr, sar=clip_info.sar, shake_fix=shake_fix,
                 preset=plan.export.preset, crf=plan.export.crf,
                 audio_bitrate_k=plan.export.audio_bitrate_k,

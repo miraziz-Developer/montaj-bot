@@ -1,11 +1,13 @@
 """Render stage A: one re-encoded file per clip (docs/EDIT_PLAN_SCHEMA.md section 6)."""
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
 from app.schemas.edit_plan import Clip, Reframe
 from app.services.media.ffmpeg import run_ffmpeg
 from app.services.media.probe import probe
+from app.services.render.face_track import FocusKey, focus_expr, focus_mean
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +24,19 @@ def _even(value: float) -> int:
     return n if n % 2 == 0 else n + 1
 
 
-def fill_chain(target_w: int, target_h: int, reframe: Reframe, *, duration: float = 0.0) -> str:
+def fill_chain(
+    target_w: int,
+    target_h: int,
+    reframe: Reframe,
+    *,
+    duration: float = 0.0,
+    focus: Sequence[FocusKey] | None = None,
+) -> str:
     """Cover the target at zoom z, then crop around the focus point.
+
+    `focus` (face-tracking keypoints, see face_track.py) replaces the planner's static focus_x/focus_y with a
+    smooth camera path: the crop centre becomes a piecewise-linear expression of `t`. Clips too short to
+    animate use the path's mean instead.
 
     Every number is computed here in Python; only ffmpeg's own `min`/`max`/`t` expression functions appear
     in the filter (consistent approach). The quotes keep the commas of the expressions out of the filter
@@ -38,11 +51,17 @@ def fill_chain(target_w: int, target_h: int, reframe: Reframe, *, duration: floa
     animate = duration >= MIN_ANIMATE_SEC
     end_zoom = reframe.zoom * (1 + ZOOM_PUSH_IN) if animate else reframe.zoom
     scaled_w, scaled_h = _even(target_w * end_zoom), _even(target_h * end_zoom)
+    if focus:
+        mean_x, mean_y = focus_mean(focus)
+        fx, fy = f"({focus_expr(focus, 'x')})", f"({focus_expr(focus, 'y')})"
+    else:
+        mean_x, mean_y = reframe.focus_x, reframe.focus_y
+        fx, fy = f"{reframe.focus_x:.4f}", f"{reframe.focus_y:.4f}"
 
     if not animate:
         half_w, half_h = f"{target_w / 2:g}", f"{target_h / 2:g}"
-        x = f"'min(max(iw*{reframe.focus_x:.4f}-{half_w},0),iw-{target_w})'"
-        y = f"'min(max(ih*{reframe.focus_y:.4f}-{half_h},0),ih-{target_h})'"
+        x = f"'min(max(iw*{mean_x:.4f}-{half_w},0),iw-{target_w})'"
+        y = f"'min(max(ih*{mean_y:.4f}-{half_h},0),ih-{target_h})'"
         return (
             f"scale=w={scaled_w}:h={scaled_h}:force_original_aspect_ratio=increase:force_divisible_by=2,"
             f"crop={target_w}:{target_h}:x={x}:y={y}"
@@ -52,8 +71,8 @@ def fill_chain(target_w: int, target_h: int, reframe: Reframe, *, duration: floa
     frac = f"min(t/{duration:.4f},1)"
     w = f"'min({start_w:g}-({start_w - target_w:g})*{frac},iw)'"
     h = f"'min({start_h:g}-({start_h - target_h:g})*{frac},ih)'"
-    x = f"'min(max(iw*{reframe.focus_x:.4f}-ow/2,0),iw-ow)'"
-    y = f"'min(max(ih*{reframe.focus_y:.4f}-oh/2,0),ih-oh)'"
+    x = f"'min(max(iw*{fx}-ow/2,0),iw-ow)'"
+    y = f"'min(max(ih*{fy}-oh/2,0),ih-oh)'"
     return (
         f"scale=w={scaled_w}:h={scaled_h}:force_original_aspect_ratio=increase:force_divisible_by=2,"
         f"crop={w}:{h}:x={x}:y={y},"
@@ -171,6 +190,7 @@ async def render_clip(
     hdr: bool = False,
     sar: float = 1.0,
     shake_fix: bool = False,
+    focus_track: Sequence[FocusKey] | None = None,
     preset: str = "veryfast",
     crf: int = 21,
     audio_bitrate_k: int = 160,
@@ -225,7 +245,7 @@ async def render_clip(
         )
         args += ["-filter_complex", graph, "-map", "[v]"]
     else:
-        chain = fill_chain(target_w, target_h, clip.reframe, duration=src_dur)
+        chain = fill_chain(target_w, target_h, clip.reframe, duration=src_dur, focus=focus_track)
         args += [
             "-vf",
             f"{source_prefix(hdr, sar)}{stabilize() + ',' if shake_fix else ''}{color_polish()},{chain},"

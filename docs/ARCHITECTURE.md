@@ -253,6 +253,7 @@ RENDER_PRESET=veryfast
 RENDER_CRF=21
 RENDER_CLIP_CONCURRENCY=2
 RENDER_STABILIZE=false              # ffmpeg deshake: ~2x slower clips, can fight deliberate pans
+RENDER_FACE_TRACKING=true          # virtual camera operator for `fill` reframes; falls back to the AI's static focus
 DELIVER_MAX_INLINE_BYTES=1900000000
 TMP_DIR=/tmp/montaj
 ASSETS_DIR=/app/assets

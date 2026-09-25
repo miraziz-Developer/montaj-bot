@@ -226,6 +226,8 @@ Implemented in `render/clip_stage.py` (this section describes the contract; that
 probes once and passes `hdr`, `sar`, `round_note` to every clip. Filters that run BEFORE reframing, in this order:
 HDR (PQ/HLG) -> SDR BT.709 tone-map (`zscale npl=203` + `mobius`, calibrated on real signal levels: the common `npl=100` + `hable`
 recipe renders diffuse white visibly dark) · SAR -> square pixels · optional `deshake` (`RENDER_STABILIZE`, off) · light colour polish
+
+**Face-aware framing.** For `reframe.mode == "fill"` (not round video notes) `face_track.py` samples the clip at 4 fps, detects faces with YuNet (`assets/models/*.onnx`), follows one subject and turns the detections into a smoothed camera path (dead zone, easing, speed cap). `clip_stage.fill_chain` writes it as a piecewise-linear expression of `t` in the crop x/y, replacing the static `focus_x/focus_y`. Any failure (no model, no face, <35% detections) falls back to the static focus. Disable with `RENDER_FACE_TRACKING=false`.
 (`eq` contrast/saturation + luma-only `unsharp`). `fill` clips also get the slow Ken Burns push-in (crop window shrinks ~8% over the
 clip). `fit_blur` on a round video note first crops the largest square inside the circle (`0.68 * min(w,h)`), so the baked-in mask
 corners never show, then shows it full-width over a darkened blur of itself. Audio ends with `apad` (never underruns the video);

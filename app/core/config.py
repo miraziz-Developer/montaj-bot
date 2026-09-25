@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     # ffmpeg `deshake` costs ~57% of clip render time and fights deliberate pans; off until validated on
     # real shaky footage.
     render_stabilize: bool = False
+    # Follow the speaker's face when a `fill` reframe crops the source (YuNet, CPU, ~0.3 s per clip).
+    render_face_tracking: bool = True
     deliver_max_inline_bytes: int = 1_900_000_000  # bigger results (or failed sends) become a 48 h link
     tmp_dir: str = "/tmp/montaj"
     assets_dir: str = "/app/assets"
