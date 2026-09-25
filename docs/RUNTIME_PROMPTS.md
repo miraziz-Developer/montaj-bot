@@ -169,7 +169,7 @@ clips[{id, source_id ("primary" or a broll_sources id), src_in, src_out, speed (
 reframe{mode, focus_x, focus_y, zoom}, audio{volume, mute, source ("own" normally, "primary" for a B-roll dub),
 primary_src_in, primary_src_out (only when source is "primary")}, transition_in{type "cut", duration 0},
 note (optional, <=12 words English)}];
-captions{enabled, style ("word_highlight"|"classic"), font, font_size_pct, position, primary_color, highlight_color, outline_color,
+captions{enabled, style ("pop"|"word_highlight"|"karaoke"|"classic"), font, font_size_pct, position, primary_color, highlight_color, outline_color,
 max_words_per_line, uppercase}; music{enabled, track_id, volume, ducking, fade_out_sec}; overlays[{text, start, end, position, style}];
 watermark{enabled:false, text:""}; export{crf 21, preset "veryfast", audio_bitrate_k 160, loudnorm true, denoise_audio false};
 human_summary_uz.

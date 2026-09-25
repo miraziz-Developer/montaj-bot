@@ -87,7 +87,7 @@ class Clip(BaseModel):
 
 class Captions(BaseModel):
     enabled: bool = True
-    style: Literal["word_highlight", "classic"] = "word_highlight"
+    style: Literal["word_highlight", "pop", "karaoke", "classic"] = "word_highlight"
     font: Literal["Montserrat-Bold", "NotoSans-Bold", "Inter-Bold"] = "Montserrat-Bold"
     font_size_pct: float = Field(5.0, ge=2.5, le=9.0)  # percent of output height
     position: Literal["top", "middle", "lower_third", "bottom"] = "lower_third"
@@ -298,6 +298,8 @@ Grouping: consecutive words form one caption group until `max_words_per_line` is
 - `word_highlight`: one Dialogue PER WORD inside the group; each shows the whole group with the current word wrapped in the
   highlight color override and others in primary color. Event i runs from word_i.start to word_{i+1}.start (same group); the last
   word runs to its own end + 0.05. This produces the karaoke-style highlight without ASS `\k` tags.
+- `pop` (default of `dynamic_reels`): like `word_highlight`, but the active word bounces in (82% -> 118% -> 100%, ASS `\t` transforms).
+- `karaoke`: one Dialogue per group; each word sweeps to the highlight colour while spoken (`\kf`, style `Kar`).
 `uppercase: true` -> `.upper()` the text (locale-aware enough for Latin Uzbek; do not break `o‘`/`g‘` characters).
 
 ## 8. Text safety (mandatory)

@@ -88,7 +88,7 @@ def test_header_and_styles() -> None:
         for line in ass.splitlines()
         if line.startswith("Style:")
     }
-    assert set(styles) == {"Cap", "Title", "Cta", "Lower", "Wm"}
+    assert set(styles) == {"Cap", "Kar", "Title", "Cta", "Lower", "Wm"}
     cap = styles[
         "Cap"
     ]  # Name,Font,Size,Pri,Sec,Out,Back,Bold,I,U,S,SX,SY,Sp,An,BS,Outline,Shadow,Align,ML,MR,MV,Enc
@@ -132,6 +132,24 @@ def test_word_highlight_makes_one_event_per_word_showing_the_whole_group() -> No
     assert _fields(events[0])[9] == f"{{\\c{hl}&}}bir{{\\c{pri}&}} ikki uch"
     assert _fields(events[1])[9] == f"bir {{\\c{hl}&}}ikki{{\\c{pri}&}} uch"
     assert all(_fields(e)[3] == "Cap" for e in events)
+
+
+def test_pop_animates_only_the_active_word_and_resets_it() -> None:
+    plan = make_plan([(0, 4)], captions=Captions(style="pop", max_words_per_line=3))
+    events = _events(_ass(plan, THREE))
+    assert len(events) == 3
+    text = _fields(events[1])[9]
+    assert text.startswith("bir {\\c") and "\\t(0,90,\\fscx118\\fscy118)" in text
+    assert "ikki{\\fscx100\\fscy100\\c" in text and text.endswith(" uch")
+    assert text.count("\\t(") == 2  # exactly one word animates per event
+
+
+def test_karaoke_is_one_event_per_group_with_sweep_durations() -> None:
+    plan = make_plan([(0, 4)], captions=Captions(style="karaoke", max_words_per_line=3))
+    [event] = _events(_ass(plan, THREE))
+    assert _fields(event)[3] == "Kar"
+    durations = [int(m) for m in re.findall(r"\\kf(\d+)", _fields(event)[9])]
+    assert durations[:2] == [50, 50] and len(durations) == 3  # bir, ikki: 0.5 s each; uch: its own length
 
 
 def test_classic_makes_one_event_per_group() -> None:

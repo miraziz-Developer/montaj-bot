@@ -74,7 +74,7 @@ class Clip(BaseModel):
 
 class Captions(BaseModel):
     enabled: bool = True
-    style: Literal["word_highlight", "classic"] = "word_highlight"
+    style: Literal["word_highlight", "pop", "karaoke", "classic"] = "word_highlight"
     font: Literal["Montserrat-Bold", "NotoSans-Bold", "Inter-Bold"] = "Montserrat-Bold"
     font_size_pct: float = Field(5.0, ge=2.5, le=9.0)  # percent of output height
     position: Literal["top", "middle", "lower_third", "bottom"] = "lower_third"

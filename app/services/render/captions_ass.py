@@ -29,6 +29,10 @@ _STYLE_FORMAT = (
     "MarginL, MarginR, MarginV, Encoding"
 )
 _EVENT_FORMAT = "Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
+POP_START_SCALE = 82  # percent: the active word starts small...
+POP_PEAK_SCALE = 118  # ...overshoots to this (CapCut-style bounce)...
+POP_PEAK_MS = 90  # ...by this many ms after it is spoken...
+POP_SETTLE_MS = 190  # ...and settles back to 100 by this time
 _OVERLAY_STYLES = {"title": "Title", "cta": "Cta", "lower_third": "Lower"}
 _TITLE_ALIGNMENT = {"top": 8, "middle": 5, "bottom": 2}
 
@@ -69,10 +73,12 @@ def has_events(ass: str) -> bool:
 def _style(
     name: str, font: str, size: float, primary: str, outline: str, alignment: int,
     margin_lr: int, margin_v: int, *, outline_width: float | None = None, back: str = "&H00000000",
+    secondary: str | None = None,
 ) -> str:  # fmt: skip
     width = 0.12 * size if outline_width is None else outline_width
     return (
-        f"Style: {name},{font},{round(size)},{primary},{primary},{outline},{back},-1,0,0,0,100,100,0,0,1,"
+        f"Style: {name},{font},{round(size)},{primary},{secondary or primary},{outline},{back},"
+        "-1,0,0,0,100,100,0,0,1,"
         f"{width:.1f},0,{alignment},{margin_lr},{margin_lr},{margin_v},1"
     )
 
@@ -91,6 +97,8 @@ def _styles(plan: EditPlan, w: int, h: int) -> list[str]:
     return [
         _style("Cap", font, cap_size, ass_color(caps.primary_color), ass_color(caps.outline_color),
                position[0], side, position[1]),
+        _style("Kar", font, cap_size, ass_color(caps.highlight_color), ass_color(caps.outline_color),
+               position[0], side, position[1], secondary=ass_color(caps.primary_color)),
         _style("Title", font, _OVERLAY_FONT_PCT["title"] * h, white, black, 8, side, round(0.08 * h)),
         _style("Cta", font, _OVERLAY_FONT_PCT["cta"] * h, ass_color(caps.highlight_color), black, 2,
                side, round(0.30 * h)),
@@ -195,6 +203,25 @@ def _wrap_to_width(text: str, font_px: float, max_width_px: float) -> str:
     return "\\N".join(lines)
 
 
+def _pop_tag(highlight: str) -> str:
+    """Override tags that make the active word bounce in: small -> overshoot -> settle."""
+    return (
+        f"{{\\c{highlight}&\\fscx{POP_START_SCALE}\\fscy{POP_START_SCALE}"
+        f"\\t(0,{POP_PEAK_MS},\\fscx{POP_PEAK_SCALE}\\fscy{POP_PEAK_SCALE})"
+        f"\\t({POP_PEAK_MS},{POP_SETTLE_MS},\\fscx100\\fscy100)}}"
+    )
+
+
+def _karaoke_event(group: list[_Word]) -> str:
+    """One event per group: each word sweeps from the plain colour to the highlight colour as it is spoken
+    (`\\kf`, durations in centiseconds; the style's secondary colour is the not-yet-spoken one)."""
+    parts = []
+    for i, word in enumerate(group):
+        stop = group[i + 1].start if i < len(group) - 1 else word.end
+        parts.append(f"{{\\kf{max(1, round((stop - word.start) * 100))}}}{word.text}")
+    return _dialogue(group[0].start, group[-1].end + LAST_WORD_TAIL_SEC, "Kar", _join(parts))
+
+
 def _caption_events(
     plan: EditPlan,
     transcript: Transcript,
@@ -219,12 +246,15 @@ def _caption_events(
             if caps.style == "classic":
                 events.append(_dialogue(group[0].start, group[-1].end, "Cap", _join([w.text for w in group])))
                 continue
+            if caps.style == "karaoke":
+                events.append(_karaoke_event(group))
+                continue
             for i, word in enumerate(group):
                 end = group[i + 1].start if i < len(group) - 1 else word.end + LAST_WORD_TAIL_SEC
-                tokens = [
-                    f"{{\\c{highlight}&}}{w.text}{{\\c{primary}&}}" if j == i else w.text
-                    for j, w in enumerate(group)
-                ]
+                pop = caps.style == "pop"
+                on = _pop_tag(highlight) if pop else f"{{\\c{highlight}&}}"
+                off = f"{{\\fscx100\\fscy100\\c{primary}&}}" if pop else f"{{\\c{primary}&}}"
+                tokens = [f"{on}{w.text}{off}" if j == i else w.text for j, w in enumerate(group)]
                 events.append(_dialogue(word.start, max(end, word.start + 0.02), "Cap", _join(tokens)))
     return events
 

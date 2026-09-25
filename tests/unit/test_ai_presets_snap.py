@@ -24,7 +24,7 @@ def test_preset_table_matches_the_spec() -> None:
         0.30,
         0.08,
     )
-    assert (reels.captions_style, reels.captions_max_words, reels.music_volume) == ("word_highlight", 3, 0.10)
+    assert (reels.captions_style, reels.captions_max_words, reels.music_volume) == ("pop", 3, 0.10)
     assert (reels.target_min_sec, reels.target_max_sec) == (15, 60)
     assert (talk.max_shot_sec, talk.zoom_levels, talk.remove_gap_sec, talk.captions_style) == (
         12,
@@ -45,7 +45,7 @@ def test_preset_table_matches_the_spec() -> None:
 def test_preset_rules_dict_has_the_prompt_shape() -> None:
     data = preset_rules_dict(get_preset("dynamic_reels"))
     assert data["captions"] == {
-        "style": "word_highlight",
+        "style": "pop",
         "max_words_per_line": 3,
         "highlight_color": "#FFD400",
     }

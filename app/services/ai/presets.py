@@ -15,7 +15,7 @@ class PresetRules:
     crossfade_sec: float  # 0 = hard cuts; applied between clips by code, like zoom_levels
     remove_gap_sec: float  # silent gaps longer than this are cut out
     pad_sec: float  # breathing room kept on both sides of a cut
-    captions_style: Literal["word_highlight", "classic"]
+    captions_style: Literal["word_highlight", "pop", "karaoke", "classic"]
     captions_max_words: int
     captions_highlight_color: str
     music_volume: float
@@ -33,7 +33,7 @@ PRESETS: dict[str, PresetRules] = {
         crossfade_sec=0.12,
         remove_gap_sec=0.30,
         pad_sec=0.08,
-        captions_style="word_highlight",
+        captions_style="pop",
         captions_max_words=3,
         captions_highlight_color="#FFD400",
         music_volume=0.10,

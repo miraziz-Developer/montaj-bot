@@ -282,11 +282,7 @@ def test_fallback_plan_is_valid_and_uses_preset_defaults() -> None:
     plan = _fallback(transcript, [], 20.0)
     validated, errors = _validate(plan, duration=20.0)
     assert errors == []
-    assert (
-        plan.captions.enabled
-        and plan.captions.style == "word_highlight"
-        and plan.captions.max_words_per_line == 3
-    )
+    assert plan.captions.enabled and plan.captions.style == "pop" and plan.captions.max_words_per_line == 3
     assert plan.overlays == [] and plan.human_summary_uz == SUMMARY_TEMPLATE.format(
         preset_label="Dinamik Reels"
     )
