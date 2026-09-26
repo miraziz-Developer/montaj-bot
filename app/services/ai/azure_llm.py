@@ -322,6 +322,10 @@ class AzureOpenAIClient:
         )
         return result.plan, result.changes_uz, result.unsupported_uz, usage
 
+    async def correct_transcript(self, *, audio_path: Path, draft: str) -> tuple[str, UsageInfo]:
+        # ASSUMPTION: the Azure OpenAI deployments used here take no audio input, so the STT text stays as is
+        raise AIError("transcript correction needs audio input (Gemini only)")
+
     async def release_video(self, video_path: Path) -> None:
         return (
             None  # no server-side file to clean up: frames are extracted fresh into an auto-cleaned temp dir

@@ -93,10 +93,11 @@ def test_audio_graph_adds_effects_after_loudness_normalisation_then_limits() -> 
 # ---------- real ffmpeg ----------
 
 
-def _rms_db(video: Path, start: float, duration: float) -> float:
+def _rms_db(video: Path, start: float, duration: float, highpass: int = 0) -> float:
+    af = f"highpass=f={highpass},volumedetect" if highpass else "volumedetect"
     err = subprocess.run(
         ["ffmpeg", "-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", str(video), "-vn",
-         "-af", "volumedetect", "-f", "null", "-"],
+         "-af", af, "-f", "null", "-"],
         capture_output=True, text=True, check=True,
     ).stderr  # fmt: skip
     return float(re.search(r"mean_volume: (-?[\d.]+) dB", err).group(1))  # type: ignore[union-attr]
@@ -127,7 +128,8 @@ async def test_final_render_with_look_and_effects_keeps_duration_and_adds_audibl
     [cue] = plan_cues(plan(True))
     info = await probe(str(wet))
     assert info.has_audio and info.duration_sec == pytest.approx(6.0, abs=0.3)
-    assert _rms_db(wet, cue.t + 0.2, 0.2) > _rms_db(dry, cue.t + 0.2, 0.2) + 0.5  # the whoosh is there
+    # the whoosh is there: above 2 kHz (where the test tone has no energy) it adds a lot
+    assert _rms_db(wet, cue.t + 0.2, 0.2, highpass=2000) > _rms_db(dry, cue.t + 0.2, 0.2, highpass=2000) + 6
     assert _rms_db(wet, 1.0, 0.5) == pytest.approx(_rms_db(dry, 1.0, 0.5), abs=0.5)  # nothing elsewhere
     assert _true_peak_db(wet) <= -1.0  # the limiter holds the peaks
 

@@ -39,6 +39,7 @@ class FakeSDK:
         self.generate_queue = list(generate)
         self.generate_calls: list[dict[str, Any]] = []
         self.uploads: list[str] = []
+        self.upload_configs: list[Any] = []
         self.deleted: list[str] = []
         self._states = list(file_states or ["ACTIVE"])
         self.aio = SimpleNamespace(
@@ -62,8 +63,9 @@ class FakeSDK:
             state=SimpleNamespace(name=state),
         )
 
-    async def _upload(self, *, file: str) -> Any:
+    async def _upload(self, *, file: str, config: Any = None) -> Any:
         self.uploads.append(file)
+        self.upload_configs.append(config)
         return self._file()
 
     async def _get(self, *, name: str) -> Any:
@@ -249,6 +251,20 @@ async def test_video_is_uploaded_once_and_deleted_on_release() -> None:
     await client.release_video(VIDEO)
     await client.release_video(VIDEO)  # second release is a no-op
     assert sdk.deleted == ["files/abc"]
+
+
+async def test_correct_transcript_sends_audio_with_its_type_at_temperature_0_and_deletes_it() -> None:
+    sdk = FakeSDK([_response('{"text": "Kimga qiziq bo‘lsa"}')])
+    text, usage = await _client(sdk).correct_transcript(
+        audio_path=Path("/tmp/fix_000.ogg"), draft="Kimga qizil bo'lsa"
+    )
+    assert text == "Kimga qiziq bo‘lsa" and usage == UsageInfo(100, 60)
+    assert sdk.upload_configs == [{"mime_type": "audio/ogg"}]  # the image cannot guess .ogg by itself
+    [call] = sdk.generate_calls
+    assert call["model"] == "analysis-model" and call["config"].temperature == 0.0
+    assert call["config"].system_instruction == load_prompt("transcript_fix_system.md")
+    assert json.loads(_user_text(call)) == {"draft": "Kimga qizil bo'lsa"}
+    assert sdk.deleted == ["files/abc"]  # the audio is not left on Google's side
 
 
 async def test_upload_waits_for_processing_and_rejects_failed_files() -> None:

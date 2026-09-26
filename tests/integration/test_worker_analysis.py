@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 from decimal import Decimal
@@ -61,18 +62,30 @@ async def test_costs_are_recorded(harness) -> None:  # noqa: ANN001
     await run_analysis(harness.ctx, str(h.job_id))
     job = await harness.job(h.job_id)
     assert (job.llm_input_tokens, job.llm_output_tokens) == (
-        100 + 1000,
-        20 + 200,
-    )  # 1 analysis window + the plan
+        50 + 100 + 1000,
+        10 + 20 + 200,
+    )  # transcript correction + 1 analysis window + the plan
     assert job.stt_seconds == pytest.approx(6.0, abs=0.2)
     expected = estimate_cost_usd(
-        llm_input_tokens=1100,
-        llm_output_tokens=220,
+        llm_input_tokens=1150,
+        llm_output_tokens=230,
         stt_seconds=job.stt_seconds,
         render_seconds=0,
         settings=harness.settings,
     )
     assert job.est_cost_usd == expected and job.est_cost_usd > Decimal("0")
+
+
+async def test_the_corrected_transcript_is_saved_once_and_feeds_the_planner(harness) -> None:  # noqa: ANN001
+    harness.gemini.transcript_fix = lambda draft: " ".join(["TUZATILGAN", *draft.split()[1:]])
+    h = await harness.new_job()
+    await run_analysis(harness.ctx, str(h.job_id))
+    saved = json.loads(harness.storage.blobs[("artifacts", f"{h.job_id}/transcript.json")])
+    assert saved["corrected"] is True
+    assert saved["segments"][0]["words"][0]["text"] == "TUZATILGAN"
+    [context] = harness.gemini.plan_contexts
+    assert context["transcript_segments"][0]["text"].startswith("TUZATILGAN")
+    assert len(harness.gemini.fix_calls) == 1
 
 
 async def test_a_failing_plan_falls_back_but_the_job_still_completes(harness) -> None:  # noqa: ANN001

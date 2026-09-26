@@ -61,6 +61,7 @@ Everything is an environment variable, listed with defaults in [.env.example](.e
 | `LLM_PROVIDER` | `gemini` (native video input) or `azure` (Azure OpenAI, one frame per scene) |
 | `STT_PROVIDER` | `groq` (Whisper) or `azure` (Azure AI Speech, `uz-UZ,ru-RU`) |
 | `RENDER_STABILIZE` | `false` (default) / `true`: ffmpeg `deshake`, ~2x slower clips |
+| `TRANSCRIPT_CORRECTION` | `true` (default): Gemini re-listens and fixes misheard words; the STT keeps the word timing |
 | `RENDER_FACE_TRACKING` | `true` (default): follow the speaker's face when a `fill` crop cuts the frame (OpenCV YuNet, CPU, ~0.3 s/clip) |
 | `WORKER_MEM_LIMIT` | default 3072m; a 1080p render peaks around 1 GB of ffmpeg memory |
 

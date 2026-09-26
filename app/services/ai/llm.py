@@ -31,6 +31,7 @@ PROMPTS_DIR = Path(__file__).parent / "prompts"
 TEMPERATURE_ANALYSIS = 0.2  # RUNTIME_PROMPTS.md section D
 TEMPERATURE_PLAN = 0.4
 TEMPERATURE_REVISE = 0.3
+TEMPERATURE_TRANSCRIPT = 0.0  # a transcription, not a creative task (the benchmark ran at temperature 0)
 MAX_API_ATTEMPTS = 3  # transient errors (429/5xx), exponential backoff
 MAX_VALIDATION_ATTEMPTS = 3  # first try + 2 retries with feedback
 TRANSIENT_CODES = {429, 500, 502, 503, 504}
@@ -49,6 +50,7 @@ ANALYSIS_USER = Template(
 )
 
 T = TypeVar("T")
+_MIME_BY_SUFFIX = {".ogg": "audio/ogg", ".mp4": "video/mp4"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +60,10 @@ class UsageInfo:
 
     def __add__(self, other: "UsageInfo") -> "UsageInfo":
         return UsageInfo(self.input_tokens + other.input_tokens, self.output_tokens + other.output_tokens)
+
+
+class TranscriptFix(BaseModel):
+    text: str
 
 
 class RevisionResult(BaseModel):
@@ -84,6 +90,8 @@ class LLMClient(Protocol):
     async def revise(
         self, *, current_plan: EditPlan, message: str, context: dict[str, Any]
     ) -> tuple[EditPlan, list[str], list[str], UsageInfo]: ...
+
+    async def correct_transcript(self, *, audio_path: Path, draft: str) -> tuple[str, UsageInfo]: ...
 
     async def release_video(self, video_path: Path) -> None:
         """Delete any provider-side copy of the video (privacy: used only for the user's own result)."""
@@ -229,7 +237,9 @@ class GeminiClient:
                 return self._files[key]
             sdk = self._sdk()
             try:
-                file = await sdk.aio.files.upload(file=key)
+                # the slim image's mimetypes table has no .ogg: pass the type (google-genai 2.25 API)
+                mime = _MIME_BY_SUFFIX.get(video_path.suffix.lower())
+                file = await sdk.aio.files.upload(file=key, config={"mime_type": mime} if mime else None)
                 waited = 0.0
                 while _state_name(file) == "PROCESSING":
                     if waited >= self._file_timeout:
@@ -245,6 +255,26 @@ class GeminiClient:
                 raise AIError(f"Gemini file is not usable (state={_state_name(file)})")
             self._files[key] = file
             return file
+
+    async def correct_transcript(self, *, audio_path: Path, draft: str) -> tuple[str, UsageInfo]:
+        """Gemini listens to `audio_path` and returns the corrected text of `draft` (ai/transcript_fix.py)."""
+        model = self._require_model(self._settings.gemini_analysis_model, "GEMINI_ANALYSIS_MODEL")
+        file = await self._ensure_uploaded(audio_path)
+        part = types.Part(
+            file_data=types.FileData(file_uri=file.uri, mime_type=file.mime_type or "audio/ogg")
+        )
+        try:
+            result, usage = await self._structured(
+                model=model,
+                system=load_prompt("transcript_fix_system.md"),
+                user_text=_dumps({"draft": draft}),
+                temperature=TEMPERATURE_TRANSCRIPT,
+                parse=TranscriptFix.model_validate_json,
+                prefix_parts=[part],
+            )
+        finally:
+            await self.release_video(audio_path)
+        return result.text, usage
 
     async def release_video(self, video_path: Path) -> None:
         file = self._files.pop(str(video_path), None)

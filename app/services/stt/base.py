@@ -25,6 +25,7 @@ class TranscriptSegment(BaseModel):
 class Transcript(BaseModel):
     language: str
     segments: list[TranscriptSegment]
+    corrected: bool = False  # words already fixed by ai/transcript_fix.py (never corrected twice)
 
     def all_words(self) -> list[Word]:
         return [word for segment in self.segments for word in segment.words]

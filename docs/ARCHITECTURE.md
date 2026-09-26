@@ -152,6 +152,10 @@ Working dir `TMP_DIR/{job_id}`, removed in `finally`.
 3. **proxy**: 720p (480p if source > `LONG_VIDEO_THRESHOLD_SEC`), h264, keyframe every ~2 s, aac 64k. Upload to artifacts.
 4. **audio**: extract mono 16 kHz Opus/OGG chunks of <= 600 s -> STT -> `transcript.json` (words + segments, absolute seconds).
 5. **silences**: ffmpeg `silencedetect` -> `silences.json`.
+   **4b. transcript correction** (`ai/transcript_fix.py`, `TRANSCRIPT_CORRECTION`, Gemini only): per <= 600 s window
+   Gemini hears the audio with the STT draft and returns the corrected text; `difflib` aligns it word by word onto the
+   STT's word times (misheard words take the old words' time slot). A window whose text differs too much, or a long
+   dropped/added run, keeps the STT words. The result overwrites `transcript.json` with `corrected: true` (done once).
 6. **scenes**: PySceneDetect on the proxy, then post-process (merge < 1 s, split > 12 s at sentence/silence boundaries,
    or every 8 s if none) -> `scenes.json`.
 7. **analysis**: Gemini watches the proxy video (default 1 frame/second + audio) in windows of <= `ANALYSIS_CHUNK_SEC`
@@ -247,6 +251,7 @@ GROQ_API_KEY=
 GROQ_STT_MODEL=whisper-large-v3-turbo
                                     # STT_PROVIDER=azure needs AZURE_SPEECH_API_KEY, AZURE_SPEECH_ENDPOINT, AZURE_SPEECH_LOCALES=uz-UZ,ru-RU
 STT_CONCURRENCY=3
+TRANSCRIPT_CORRECTION=true         # Gemini fixes the STT words, the STT keeps the word timing (Uzbek accuracy)
 WORKER_CONCURRENCY=1
 JOB_TIMEOUT_SEC=14400
 RENDER_PRESET=veryfast

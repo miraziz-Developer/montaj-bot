@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     azure_speech_endpoint: str = ""
     azure_speech_locales: str = "uz-UZ,ru-RU"
     stt_concurrency: int = 3
+    # Gemini re-listens and fixes the STT's words, keeping the STT's word times (ai/transcript_fix.py)
+    transcript_correction: bool = True
 
     worker_concurrency: int = 1
     job_timeout_sec: int = 14400

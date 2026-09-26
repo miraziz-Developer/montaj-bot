@@ -6,6 +6,7 @@ import shutil
 import time
 import uuid
 from collections.abc import Awaitable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from app.services.ai.analysis import analyze_full_video
 from app.services.ai.llm import UsageInfo
 from app.services.ai.plan_text import PlanContext, SourceInfo
 from app.services.ai.planner import build_initial_plan, build_revised_plan
+from app.services.ai.transcript_fix import correct_transcript
 from app.services.delivery import deliver_result
 from app.services.media.pipeline import PreAnalysisResult, run_pre_analysis
 from app.services.render.engine import render_plan
@@ -124,6 +126,23 @@ def _cost(deps: WorkerDeps, job: Job, tokens: dict[str, int], **overrides: Any) 
 # ---------- analysis ----------
 
 
+async def _corrected(
+    deps: WorkerDeps, job: Job, upload: Upload, pre: PreAnalysisResult, workdir: Path
+) -> tuple[PreAnalysisResult, UsageInfo]:
+    """Gemini fixes the STT's words on the STT's timing (ai/transcript_fix.py). The result replaces the
+    `transcript.json` artifact, so render and revisions use it and a re-run never pays for it twice."""
+    if not deps.settings.transcript_correction or pre.transcript.corrected:
+        return pre, UsageInfo()
+    fixed, usage = await correct_transcript(
+        deps.gemini, pre.transcript, proxy_path=pre.proxy_path, duration_sec=float(upload.duration_sec or 0),
+        workdir=workdir / "transcript_fix", job_id=job.id, max_concurrency=deps.settings.llm_max_concurrency,
+    )  # fmt: skip
+    if not fixed.corrected:
+        return pre, usage
+    await artifact_store(deps, job, workdir).save_json("transcript.json", fixed.model_dump())
+    return replace(pre, transcript=fixed), usage
+
+
 async def _analysis(
     deps: WorkerDeps, job: Job, upload: Upload, user: User, pre: PreAnalysisResult, workdir: Path
 ) -> tuple[VideoAnalysis, UsageInfo]:
@@ -166,6 +185,7 @@ async def run_analysis(ctx: dict[str, Any], job_id: str) -> None:
         if await _transition(deps, jid, [JobStatus.PREPROCESSING], JobStatus.ANALYZING) is None:
             return
         await _safe(deps.notifier.progress(job, texts.PROGRESS_ANALYZING))
+        pre, fix_usage = await _corrected(deps, job, upload, pre, workdir)
         analysis, analysis_usage = await _analysis(deps, job, upload, user, pre, workdir)
 
         stage = Stage.PLAN
@@ -196,7 +216,7 @@ async def run_analysis(ctx: dict[str, Any], job_id: str) -> None:
         )
         await artifact_store(deps, job, workdir).save_json("plan_v1.json", plan.model_dump(mode="json"))
 
-        tokens = _tokens(job, analysis_usage, plan_usage)
+        tokens = _tokens(job, fix_usage, analysis_usage, plan_usage)
         async with deps.sessionmaker() as session:
             session.add(
                 EditPlanRow(

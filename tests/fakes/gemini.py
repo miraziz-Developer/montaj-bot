@@ -74,6 +74,8 @@ class FakeGeminiClient:
         self.plan_contexts: list[dict[str, Any]] = []
         self.revise_calls: list[dict[str, Any]] = []
         self.released: list[Path] = []
+        self.transcript_fix: Callable[[str], str] | None = None  # draft -> corrected (None: unchanged)
+        self.fix_calls: list[str] = []
         self._running = 0
         self.max_running = 0
 
@@ -107,6 +109,11 @@ class FakeGeminiClient:
         assert self.revision is not None
         plan, changes, unsupported = self.revision
         return plan.model_copy(deep=True), list(changes), list(unsupported), UsageInfo(500, 100)
+
+    async def correct_transcript(self, *, audio_path: Path, draft: str) -> tuple[str, UsageInfo]:
+        assert audio_path.is_file(), "the corrector must receive a real audio file"
+        self.fix_calls.append(draft)
+        return (self.transcript_fix(draft) if self.transcript_fix else draft), UsageInfo(50, 10)
 
     async def release_video(self, video_path: Path) -> None:
         self.released.append(video_path)
